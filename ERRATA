@@ -1,0 +1,290 @@
+	"Implementing functional languages: a tutorial"
+	~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	Peyton Jones & Lester, Prentice Hall 1992
+
+
+Last modified: 10 Feb 94
+
+
+*****************************************************************
+*	Errata in VERSION 1.5 					*
+*								*
+* Version 1.5 corresponds to the second printing of the book	*
+* You can distinguish it by looking at the very bottom of	*
+* the fourth page of the book, which has the Libarary of	*
+* Congress Cataloguing-in-Publication Data.			*
+* At the bottom of this page, the second printing has a line	*
+* which goes	2 3 4 5 96 95 94 93 92				*
+* (The first printing has an extra "1" at the start 		*
+*****************************************************************
+
+Preface, page xii, line -16
+	Replace "than a just a" by "than just a".
+
+Fig 1.1, page 7.
+	Interchange the last two lines of the table, so that
+	underscore becomes a "varch" instead of an "alpha".
+
+Section 1.5.4, page 17, exercise 1.6.
+	Delete the phrase ", and define iDisplay in terms of flatten"
+	(It already is so defined, a few lines above.)
+
+Section 1.6.1, page 20, line -10 
+	(Not an error; just an improvement.)
+	Replace "123abc" by "123abc456"
+
+Section 1.6.2, page 23, line 9: 
+	"Exercise 1.16" should be "Exercise 1.17".
+
+Section 1.6.2, page 23, line 12: 
+	Replace "which which" with "which".
+
+Section 1.6.4, page 27
+
+    Replace 
+	>          take_first_parse ((prog,[]) : other_parses) = prog
+    by 
+	>          take_first_parse ((prog,[]) : others) = prog
+	>          take_first_parse (parse     : others) = take_first_parse others
+
+    Insert "complete" just after "and then selecting the first", two
+	sentences before this code.
+
+    Replace the whole sentence immediately before the code by:
+	If it returns no complete parse --- that is, one in which
+	the sequence of tokens remaining after the parse is empty ---
+	@syntax@ produces a (horribly uninformative) error message.
+
+
+Section 1.6.6, page 30, Fig 1.3
+	In line 4 of the Figure, replace "var" by "var_1 ... var_n"
+	(The underbars means subscripts, of course)
+
+Notes to Chapter 1, page 31, Note 4: 
+	(Clarification, not error)
+	Add "Such infix operators are right-associative".
+
+Section 2.3.1, page 41, second-last bullet in list:
+	Replace "the supercombinator named sc" by "a supercombinator".
+
+Section 3.2.1, page 80, Exercise 3.1.
+Section 3.2.1, page 80, Exercise 3.2.
+	(Clarification.)
+	Replace "for all expressions in aExpr" by 
+		"for all expressions e of type aExpr"
+		(both "e" and "aExpr" should be in typewriter font)
+	Replace "aExpr" by "e" (twice) in the equation which follows.
+
+Section 3.3.3, page 88, rule 3.12
+Section 3.4.2, page 97, rule 3.17 (twice)
+Section 3.5, page 99, rule 3.19
+	(This isn't an error, but it makes the style more consistent.)
+	Replace "Unwind : i" by "[Unwind]"
+
+Setion 3.5.4, page 104, line -2
+	Replace "an shorter" by "a shorter".
+
+Section 3.7.2, page 116, line -9: 
+	Replace "an simple" by "a simple".
+
+Section 3.8.4, page 120, rule 3.31
+	Replace "t:i'" by "t->i'"
+	(the "->" should be in typewriter font)
+
+Section 3.8.4, page 120, line -12, -13:
+	Replace "1:" and "2:" by "1 ->" and "2 ->" respectively.
+	The "Eval" on line -11 should be moved over to still line up
+	with the "Split" above it as now.
+
+Fig 3.14, page 122, lines 4 and 7
+	In the two rules for Pack, add a superscript "+0" to the first 
+	"rho" on the right hand side, and a superscript "+(a-1)" to the 
+	second "rho" on the right hand side.
+
+Fig 3.18, page 132, top line
+	Replace "evalauates" by "evaluates"
+
+Fig 3.20, page 134, line 14
+	Replace "If" by "Cond"
+
+Section 4.2.3, page 148, line -14
+	After line -14 (which is the last line of the definition of compile),
+	add the new line
+
+	>	  ++ [(name, Label name) | (name, code) <- compliedPrimitives]
+
+	The "++" should line up with the open square bracket of the previous
+	line, to give
+
+	>        initial_env = [(name, Label name) | (name, args, body) <- sc_defs]
+	>	 	      ++ [(name, Label name) | (name, code) <- compliedPrimitives]
+
+Section 4.2.4, page 150, line -16.
+	add ", #stack >= n" to the end of the line
+	insert the following new line just afterwards,
+		> = error "Too few args for Take instruction",	otherwise
+	The net effect is to make the following equation for step:
+
+> step ((Take n:instr), fptr, stack, vstack, dump, heap, cstore,stats)
+> = (instr, fptr', drop n stack, vstack, dump, heap', cstore, stats), #stack >= n
+> = error "Too few args for Take instruction",			      otherwise
+>   where (heap', fptr') = fAlloc heap (take n stack)
+
+	(This change catches a runtime error, when Take is given a stack
+	with too few arguments on it.  This can happen while updating
+	is being added (especially before partial-application updating is in).
+	The code as it stood originally silently ignored the error, giving
+	rise to a much more obscure error later on.
+	Furthermore, bugs in the compiler can easily give rise to an
+	erroneous Take.)
+
+Section 4.2.5, page 152, line -3
+	Replace "# (hAddresses heap)" by "hSize heap"
+	(This isn't a bug, but it's tidier.)
+
+Figure 4.6, page 180, the E scheme
+	In the right hand side of (d',is_body) = ...
+	replace "R[e]" with "R[body]"
+
+Exercise 4.28, page 185, line 9, replace "Take" by "UpdateMarkers"
+
+Section 4.7.2, page 185, line -2, replace "timArg" by "timAMode"
+
+Section 6.6.5, page 237, line 13
+	replace
+		> separateLams prog = [ (name, [], mkSepLams args rhs)
+	by
+		> separateLams prog = [ (name, [], mkSepLams args (separateLams_e rhs))
+
+Section A.1.2, page 258, line -15
+	Replace "a association" by "an association".
+
+Section A.4.1, page 261, line -1
+	Replace "foldl" by "foldll"
+
+*****************************************************************
+*	Errata in VERSION 1.2 					*
+*								*
+* Version 1.2 corresponds to the first printing of the book	*
+* by Prentice Hall.						*
+*****************************************************************
+
+	If you find any other errors, 
+	please email simonpj@dcs.glasgow.ac.uk
+
+
+Ex 1.19.  "xxxxxx" should be ["x", "x", "x", "x", "x", "x"]
+
+Section 2.6.2 "Implementing arithmetic", para after the 
+	bullets describing primNeg: "If the stack contains just 
+	one item, ..., and the dump is empty"
+	
+	Here "empty" should be "non-empty"
+
+Section 2.7.1 "Building structured data"
+	"NDatat" should be "NData"
+
+Section 2.7.2 "Conditionals".
+	if Pack{1,0} t e = t
+	if Pack{2,0} t e = e
+
+	The 1 and 2 should be interchanged.
+
+Section 2.7.5 "Lists"
+	In definition of caseList, swap the order of "cc" and "cn" on the 
+	left-hand sides.  (cn should be before cc)
+
+	In the following paragraph, replace "second" by "third" and
+					    "third" by "second"
+
+Section 2.8.3 "An alternative representation for data values"
+	In the definitions of cons and nil near the end of the section,
+	swap the order of "cc" and "cn" on the left-hand sides.
+	(cn should be before cc)
+
+Section 3.4.2 "The evaluator"
+	In the rule 3.15 for Update, replace "a1" with "a0", twice.
+	Add to the end of the sentence immediately before the rule 
+		", and a0 is the function node."
+
+Section 3.7.2 "The solution", second bullet
+	Replace "e2" by "e1".
+
+Section 4.2.3, page 148, line 23 (last line of "compile")
+	Add a new line, and space out line 23 a little, to get
+>        initial_env =    [(name, Label name) | (name, args, body) <- sc_defs]
+>		       ++ [(name, Label name) | (name, code) <- compliedPrimitives]
+
+Section 4.2.5, page 152, line -3
+	replace "(# (hAddresses heap))" by "(hSize heap)"
+
+Fig 4.2 (p160).   In the right-hand side of the B scheme equation for B[e1+e2],
+	interchange e1 and e2, to read:
+
+	B[e1+e2] rho cont = B[e2] rho (B[e1] rho (Op Add : cont))
+
+Section 4.6.2 (p179) "Transition rules and compilation 
+		      schemes for data structures".
+	In Rule 4.19, on the second line of the rule, replace "f_d" by "f".
+	In Rule 4.20, on the third line of the rule,  replace "f_d" by "f".
+
+Fig 4.3 (p163), and Fig 4.7 (p187).  In the first equation for the R scheme,
+	instead of:
+		R[e] rho = B[e] rho [Return]
+	the equation should read:
+		R[e] rho d = B[e] rho d [Return]
+		
+Fig 4.4 (p172) and 4.7 (p187).  There should be a note in each Figure
+	that the letrec case of the R scheme is identical to the let case,
+	except that rho is replaced by rho' in each of the calls to U.
+
+Fig 4.5 (p174) and 4.8 (p188).  Replace "Const" by "IntConst".
+	[23 Oct 92]
+
+Fig 4.6 (p180) and 4.7 (p187).  In the right-hand side of the R scheme for
+	case expressions, replace "d2" by "d'".
+
+Exercise 4.24 (p181).  Replace "Return" by "ReturnConstr t".
+
+Fig 4.7 (p187).  In the right-hand side of the SC compilation scheme, replace
+		Take d' n : is
+	by
+		UpdateMarkers n : Take d' n : is
+
+Fig 4.8 (p188).  The B compilation scheme needs modification to incorporate
+	depths.  The revised B scheme should read like this:
+
+	B[e] rho d cont is a pair (d',is), where is is TIM code 
+	which evaluates e in environment rho, putting its value 
+	(which should be an integer) on top of the value stack,
+	and continuing with the code sequence cont.
+	The code assumes that the first d slots of the frame are 
+	occupied, and it uses slots (d+1...d').
+
+	B[e1 + e2] rho d cont = B[e2] rho d1 is1
+				where (d1,is1) = B[e1] rho d (Op Add : cont)
+	...and similar rules for other arithmetic primitives
+
+	B[n] rho d cont = (d, PushV (IntVConst n) : cont)	where n is a number
+	B[e] rho d cont = (d', Push (Code cont) : is)		otherwise
+			  where (d',is) =  R[e] rho d
+
+
+*****************************************************************
+*								*
+*	Errata in TUTOR's NOTES
+*								*
+*****************************************************************
+
+gm-tutor.src, line 509: 
+	[EConstr t 0] should be (EConstr t 0)
+
+
+tim-tutor.src
+	Make the same change to each definition of the step
+	function as that described above for Section 4.2.4, page 150 above.
+
+tim-tutor.src
+	Make the same change to the definition of the compile function
+	as that described above for Section 4.2.3, page 148, line -14
+

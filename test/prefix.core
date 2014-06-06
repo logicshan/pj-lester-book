@@ -1,0 +1,4 @@
+lin = Pack{1,0} ;
+snoc = Pack {2,2} ;
+
+main = snoc 1 lin

@@ -1,0 +1,177 @@
+\chapter{Example Core-language programs}
+\label{sect:core-progs}
+
+In this Appendix we give a few Core-language programs which are useful
+for testing some of the implementations developed in the book.
+They assume that the functions defined in the prelude
+(Section~\ref{sect:prelude}) are defined.
+
+\section{Basic programs}
+
+The programs in this section require only integer constants and
+function application.
+
+\subsection{Ultra-basic tests}
+
+This program should return the value @3@ rather quickly!
+\begin{verbatim}
+	main = I 3
+\end{verbatim}
+The next program requires a couple more steps before returning @3@.
+\begin{verbatim}
+	id = S K K ;
+	main = id 3
+\end{verbatim}
+This one makes quite a few applications of @id@ (how many?).
+\begin{verbatim}
+	id = S K K ;
+	main = twice twice twice id 3
+\end{verbatim}
+
+\subsection{Testing updating}
+
+This program should show up the difference between a system which does
+updating and one which does not.
+If updating occurs, the evaluation of @(I I I)@ should take place only once;
+without updating it will take place twice.
+\begin{verbatim}
+	main = twice (I I I) 3
+\end{verbatim}
+
+\subsection{A more interesting example}
+
+This example uses a functional representation of lists
+(see Section~\ref{sect:template:data-str-hof}) to build an infinite
+list of @4@'s, and then takes its second element.  The functions for
+head and tail (@hd@ and @tl@) return @abort@ if their argument is an empty
+list.  The @abort@ supercombinator just generates an infinite loop.
+\begin{verbatim}
+	cons a b cc cn = cc a b ;
+	nil      cc cn = cn ;
+	hd list = list K abort ;
+	tl list = list K1 abort ;
+	abort = abort ;
+
+	infinite x = cons x (infinite x) ;
+
+	main = hd (tl (infinite 4))
+\end{verbatim}
+
+\section{@let@ and @letrec@}
+
+If updating is implemented, then this program will execute in fewer steps
+than if not, because the evaluation of @id1@ is shared.
+\begin{verbatim}
+	main = let id1 = I I I
+	       in id1 id1 3
+\end{verbatim}
+We should test nested @let@ expressions too:
+\begin{verbatim}
+	oct g x = let h = twice g
+		  in let k = twice h
+		  in k (k x) ;
+	main = oct I 4
+\end{verbatim}
+The next program tests @letrec@s, using `functional lists' based on
+the earlier definitions of @cons@, @nil@, etc.
+\begin{verbatim}
+	infinite x = letrec xs = cons x xs
+		     in xs ;
+	main = hd (tl (tl (infinite 4)))
+\end{verbatim}
+
+\section{Arithmetic}
+
+\subsection{No conditionals}
+
+We begin with simple tests which do not require the conditional.
+\begin{verbatim}
+	main = 4*5+(2-5)
+\end{verbatim}
+This next program needs function calls to work properly.  Try replacing
+@twice twice@ with @twice twice twice@ or @twice twice twice twice@.  Predict
+what the result should be.
+\begin{verbatim}
+	inc x = x+1;
+	main = twice twice inc 4
+\end{verbatim}
+Using functional lists again, we can write a length function:
+\begin{verbatim}
+	length xs = xs length1 0 ;
+	length1 x xs = 1 + (length xs) ;
+
+	main = length (cons 3 (cons 3 (cons 3 nil)))
+\end{verbatim}
+
+\subsection{With conditionals}
+
+Once we have conditionals we can at last write `interesting' programs.
+For example, factorial:
+\begin{verbatim}
+	fac n = if (n==0) 1 (n * fac (n-1)) ;
+	main = fac 5
+\end{verbatim}
+The next program computes the greatest common divisor of two integers,
+using Euclid's algorithm:
+\begin{verbatim}
+	gcd a b = if (a==b)
+			a
+		  if (a<b) (gcd b a) (gcd b (a-b)) ;
+	main = gcd 6 10
+\end{verbatim}
+
+The @nfib@ function is interesting because its result (an integer) gives
+a count of how many function calls were made during its execution.  So
+the result divided by the execution time gives a performance measure in
+function calls per second.  As a result, @nfib@ is quite widely used as a
+benchmark.  The `nfib-number' for a particular implementation needs to
+be taken with an enormous
+dose of salt, however, because it is critically dependent
+on various rather specialised optimisations.
+\begin{verbatim}
+	nfib n = if (n==0) 1 (1 + nfib (n-1) + nfib (n-2)) ;
+	main = nfib 4
+\end{verbatim}
+
+\section{Data structures}
+
+This program returns a list of descending integers.  The evaluator
+should be expecting a list as the result of the program.
+@cons@ and @nil@ are now expected to be implemented in the
+prelude as @Pack{2,2}@ and @Pack{1,0}@ respectively.
+\begin{verbatim}
+	downfrom n = if (n == 0)
+			  nil
+			  (cons n (downfrom (n-1))) ;
+	main = downfrom 4
+\end{verbatim}
+
+The next program implements the Sieve of Eratosthenes to generate the
+infinite list of primes, and takes the first few elements of the result list.
+If you arrange that output is printed incrementally, as it is generated, you
+can remove the call to @take@ and just print the infinite list.
+\begin{verbatim}
+	main = take 3 (sieve (from 2)) ;
+
+	from n = cons n (from (n+1)) ;
+
+	sieve xs = case xs of
+			<1> -> nil ;
+			<2> p ps -> cons p (sieve (filter (nonMultiple p) ps)) ;
+
+	filter predicate xs
+		= case xs of
+			<1> -> nil ;
+			<2> p ps -> let rest = filter predicate ps
+				    in
+				    if (predicate p) (cons p rest) rest ;
+
+	nonMultiple p n = ((n/p)*p) ~= n ;
+
+	take n xs = if (n==0)
+			nil
+			(case xs of
+				<1> -> nil ;
+				<2> p ps -> cons p (take (n-1) ps))
+
+\end{verbatim}

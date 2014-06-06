@@ -1,0 +1,8 @@
+pair a b f = f a b ;
+K1 x y = y ;
+K x y = x ;
+fst p = p K ;
+snd p = p K1 ;
+f x y = letrec	w = pair x (pair y w)
+	in fst (snd (snd (snd w)));
+main = f 1 2	

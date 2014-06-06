@@ -1,0 +1,3 @@
+twice f x = f (f x);
+id = S K K;
+main = twice (id id) 3

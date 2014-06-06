@@ -1,0 +1,109 @@
+		Release history
+		~~~~~~~~~~~~~~~
+
+Version 1.11
+~~~~~~~~~~~~
+Kevin Hammond's (substantial) additions to provide a Haskell version
+of all the code. 
+
+He's also thrown in CodeGen.hs, a stanalone MIPS code generator that
+integrates with the intermediate form (used as part of a course
+exercise)
+
+Add rule for Unwind of an NConstr to the G-machine Mark 6.
+
+Put math-code stuff back in to fpsty.sty
+(new version found thanks to Will Partin).
+
+Version 1.10 (25 Aug 1997)
+~~~~~~~~~~~~
+Minor fixes to language.src (due to Justin Cormack)
+Mention that you need old Latex (2.09) not new (2e) in installation guide
+Comment out the math-code section in fptstyle.sty because it doesn't
+	work here at Glasgow any more.  I'm looking for another
+	way to get the same effect.  For now, some tyepset text
+	will look less good.
+
+Version 1.9 (16 Nov 1995)
+~~~~~~~~~~~~
+Patch to installation.src (due to Nathan Loofbourrow).  Without the
+patch, the explanation of how versions work in the .src files is
+automatically stripped of the version information, which ruins the
+explanation.
+
+Modifies Chapter 4 (the TIM chapter) and corresponding tutor's guide
+to include Gofer code.  Due to Allyn Dimock.
+
+Version 1.8 (8 June 1995)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Modifies Chapters 1, 2, 3, 6 and Appendix A to include the
+Gofer code produced by Allyn Dimock 
+
+I havn't tested this Goferised verison either!  If you don't need it,
+you'll be safer with 1.6.
+
+Version 1.7 (22 June 1994)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Modifies gm.src only to include the Gofer code produced by Marko Schuetz.
+
+I havn't tested this Goferised verison!  If you don't need it, you'll
+be safer with 1.6.
+
+Version 1.6 (22 June 1994)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Captures the current state of affairs just before integrating some
+newly Gofer-ised source in 1.7.
+
+A new file "Contributions.src" is added, with some thoughts about
+the book contributed by various people.  So for they are not integrated
+with the main book in any way at all.
+
+Quite a few typos fixed compared with 1.6 --- see ERRATA.  Nothing serious.
+
+Version 1.5 (16 Sept 1992)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Fixed embarassing bug in version-processing which prevented anything
+Latexing at all.
+
+Version 1.4 (15 Sept 1992)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Some small bug-fixes to 1.3
+	* Typos in the ERRATA file (!).
+	* A bug-fix which prevented the book Latex-ing.
+
+make-version script now understands the "ALL" flag, to tell it
+	to select all versions for a given language
+
+The main Makefile now has a variable, $(LANGUAGE), which controls what
+language (currently Miranda or Gofer) is selected when you typeset the
+book.  The default is "M" (for Miranda).
+
+Version 1.3 (Aug 20 1992)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Stephen Eldridge's revised language.src and language-tutor.src
+	added.  This release isn't guaranteed to be all working,
+	though it probably does; its main reason for existing 
+	is so that he has the same snapshot as me.
+
+More tiny portability changes to the Makefile
+
+A number of smallish errors throughout,
+	described in the (new) file ERRATA
+
+Lots of trivial typography stuff which makes the diffs look large!
+
+Version 1.2 (Jan 15 1992)	-- THIS VERSION CORRESPONDS TO THE PUBLISHED BOOK
+~~~~~~~~~~~~~~~~~~~~~~~~
+Add subtitle to book ("Implementing functional languages: a tutorial").
+Small bug-fixes to the text of the G-machine chapter.
+Minor fixes to Makefile, fpstyle.sty and installation instructions.
+
+Version 1.1 (Dec 11 1991)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Lots of typographical errors fixed.  
+Index split into Subject and Code indices.
+No changes to the code.
+
+Version 1.0 (Oct 31 1991)
+~~~~~~~~~~~~~~~~~~~~~~~~
+The original release.

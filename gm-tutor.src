@@ -1,0 +1,1105 @@
+\section{Solutions}
+\subsection{Mark~1 solutions}
+
+\subsection{Mark~2 solutions}
+\begin{solution}{gm:X:showinst2}
+
+2> showInstruction Unwind         = iStr  "Unwind"
+M2> showInstruction (Pushglobal f) = (iStr "Pushglobal ") $iAppend (iStr f)
+M2> showInstruction (Push n)       = (iStr "Push ")       $iAppend (iNum n)
+M2> showInstruction (Pushint n)    = (iStr "Pushint ")    $iAppend (iNum n)
+GH2> showInstruction (Pushglobal f) = (iStr "Pushglobal ") `iAppend` (iStr f)
+GH2> showInstruction (Push n)       = (iStr "Push ")       `iAppend` (iNum n)
+GH2> showInstruction (Pushint n)    = (iStr "Pushint ")    `iAppend` (iNum n)
+2> showInstruction Mkap           = iStr  "Mkap"     
+M2> showInstruction (Update n)     = (iStr "Update ")     $iAppend (iNum n)
+M2> showInstruction (Pop n)        = (iStr "Pop ")        $iAppend (iNum n)
+GH2> showInstruction (Update n)     = (iStr "Update ")     `iAppend` (iNum n)
+GH2> showInstruction (Pop n)        = (iStr "Pop ")        `iAppend` (iNum n)
+
+\end{solution}
+
+\begin{solution}{gm:X:shownode2}
+
+2-5> showNode s a (NNum n)      = iNum n
+2-5> showNode s a (NGlobal n g) = iConcat [iStr "Global ", iStr v]
+M2-5>                              where v = hd [n | (n,b) <- globals; a=b]
+GH2-5>                              where v = hd [n | (n,b) <- globals, a==b]
+2-5>                                    globals = getGlobals s
+2-5> showNode s a (NAp a1 a2)   = iConcat [iStr "Ap ",  iStr (showaddr a1),
+2-5>                                       iStr " ",    iStr (showaddr a2)]
+2-5> showNode s a (NInd a1)     = iConcat [iStr "Ind ", iStr (showaddr a1)]
+
+\end{solution}
+
+\begin{solution}{gm:X:step2}
+
+We need to introduce two new instructions: @Update@ and @Pop@. These two
+instructions replace the @Slide@ instruction in the Mark 1 machine.
+
+M2> dispatch :: instruction -> gmState -> gmState
+GH2> dispatch :: Instruction -> GmState -> GmState
+2> dispatch Unwind         = unwind
+2> dispatch (Pushglobal f) = pushglobal f
+2> dispatch (Push n)       = push n
+2> dispatch (Pushint n)    = pushint n
+2> dispatch Mkap           = mkap
+2> dispatch (Update n)     = update n
+2> dispatch (Pop n)        = pop n
+
+We implement the @Update@ function so that it implements update's using
+indirection nodes. 
+
+M2-> update :: num -> gmState -> gmState
+GH2-> update :: Int -> GmState -> GmState
+2-> update n state
+2->  = putHeap heap' (putStack as state)
+M2->    where heap'  = hUpdate (getHeap state) (as!n) (NInd a)
+GH2->    where heap'  = hUpdate (getHeap state) (as !! n) (NInd a)
+2->          (a:as) = getStack state
+
+The @Pop@ instruction simply removes @n@ items from the stack.
+
+M> pop :: num -> gmState -> gmState
+GH> pop :: Int -> GmState -> GmState
+> pop n state
+>  = putStack (drop n (getStack state)) state
+
+The @Unwind@ instruction needs changing to handle the case where it
+discovers an indirection node.
+
+M2> unwind :: gmState -> gmState
+GH2> unwind :: GmState -> GmState
+2> unwind state
+2>  = newState (hLookup heap a)
+2>    where
+2>    (a:as) = getStack state
+2>    heap   = getHeap state
+2>    newState (NNum n)      = state
+2>    newState (NAp a1 a2)   = putCode [Unwind] (putStack (a1:a:as) state)
+M2>    newState (NGlobal n c) = error "Unwinding with too few arguments",
+M2>                                                         #as < n
+M2>                           = putCode c state, otherwise
+GH2>    newState (NGlobal n c)
+GH2>              | length as < n = error "Unwinding with too few arguments"
+GH2>              | otherwise     = putCode c state
+2>    newState (NInd a1)     = putCode [Unwind] (putStack (a1:as) state)
+
+
+\end{solution}
+
+\begin{solution}{gm:X:compileR}
+
+2-4> compileR e args = compileC e args ++ [Update n, Pop n, Unwind]
+M2-4>                   where n = #args
+GH2-4>                   where n = length args
+
+\end{solution}
+
+\subsection{Mark~3 solutions}
+\begin{solution}{gm:X:instruction3}
+
+M3> instruction ::= Slide num          |
+M3>                 Alloc num          |
+M3>                 Update num         |
+M3>                 Pop num            |
+M3>                 Unwind             |
+M3>                 Pushglobal name    |
+M3>                 Pushint num        |
+M3>                 Push num           |
+M3>                 Mkap
+GH3> data Instruction 
+GH3>     = Slide Int          
+GH3>     | Alloc Int          
+GH3>     | Update Int         
+GH3>     | Pop Int            
+GH3>     | Unwind             
+GH3>     | Pushglobal Name    
+GH3>     | Pushint Int        
+GH3>     | Push Int           
+GH3>     | Mkap
+
+
+M3> dispatch :: instruction -> gmState -> gmState
+GH3> dispatch :: Instruction -> GmState -> GmState
+3> dispatch (Slide n)      = slide n
+3> dispatch Unwind         = unwind
+3> dispatch (Pushglobal f) = pushglobal f
+3> dispatch (Push n)       = push n
+3> dispatch (Pushint n)    = pushint n
+3> dispatch Mkap           = mkap
+3> dispatch (Update n)     = update n
+3> dispatch (Pop n)        = pop n
+3> dispatch (Alloc n)      = alloc n
+
+And of course we wish to be able to display these instructions, so we re-define
+@showInstruction@.
+
+M3> showInstruction (Slide n)      = (iStr "Slide ")      $iAppend (iNum n)
+M3> showInstruction (Alloc n)      = (iStr "Alloc ")      $iAppend (iNum n)
+M3> showInstruction (Update n)     = (iStr "Update ")     $iAppend (iNum n)
+M3> showInstruction (Pop n)        = (iStr "Pop ")        $iAppend (iNum n)
+M3> showInstruction Unwind         = iStr  "Unwind"
+M3> showInstruction (Pushglobal f) = (iStr "Pushglobal ") $iAppend (iStr f)
+M3> showInstruction (Pushint n)    = (iStr "Pushint ")    $iAppend (iNum n)
+M3> showInstruction (Push n)       = (iStr "Push ")       $iAppend (iNum n)
+M3> showInstruction Mkap           = iStr  "Mkap"     
+GH3> showInstruction (Slide n)      = (iStr "Slide ")      `iAppend` (iNum n)
+GH3> showInstruction (Alloc n)      = (iStr "Alloc ")      `iAppend` (iNum n)
+GH3> showInstruction (Update n)     = (iStr "Update ")     `iAppend` (iNum n)
+GH3> showInstruction (Pop n)        = (iStr "Pop ")        `iAppend` (iNum n)
+GH3> showInstruction Unwind         = iStr  "Unwind"
+GH3> showInstruction (Pushglobal f) = (iStr "Pushglobal ") `iAppend` (iStr f)
+GH3> showInstruction (Pushint n)    = (iStr "Pushint ")    `iAppend` (iNum n)
+GH3> showInstruction (Push n)       = (iStr "Push ")       `iAppend` (iNum n)
+GH3> showInstruction Mkap           = iStr  "Mkap"     
+
+\end{solution}
+
+\begin{solution}{gm:X:letrec3}
+
+3-> compileLetrec comp defs e args
+3->  = [Alloc n]           ++
+3->    compiled defs (n-1) ++
+3->    comp e newArgs      ++
+3->    [Slide n]
+3->    where newArgs = compileArgs defs args
+M3->          n       = #defs
+GH3->          n       = length defs
+3->          compiled []     i = []
+3->          compiled (d:ds) i = compileC (second d) newArgs ++
+3->                              [Update i]                  ++
+3->                              compiled ds (i-1)
+
+\end{solution}
+
+\begin{solution}{gm:X:alloc3}
+It is an example of ``almost circular programming''.
+
+You would allocate the memory first and then fill in its value. The difference
+lies in the fact that we can not return {\em both} the address {\em and} the
+node from the same function.
+\end{solution}
+
+\begin{solution}{gm:X:step3}
+
+The major interest in the instructions lies in @Alloc@
+
+M3-> alloc :: num -> gmState -> gmState
+GH3-> alloc :: Int -> GmState -> GmState
+3-> alloc n state
+3->  = putHeap heap' (putStack (as'++getStack state) state)
+3->    where (heap', as') = allocNodes n (getHeap state)
+
+M3-> push :: num -> gmState -> gmState
+GH3-> push :: Int -> GmState -> GmState
+3-> push n state
+M3->  = putStack ((as!n): as) state
+GH3->  = putStack ((as !! n): as) state
+3->    where as = getStack state
+
+
+M3> unwind :: gmState -> gmState
+GH3> unwind :: GmState -> GmState
+3> unwind state
+3>  = newState (hLookup heap a)
+3>    where
+3>    (a:as) = getStack state
+3>    heap   = getHeap state
+3>    newState (NNum n)      = state
+3>    newState (NAp a1 a2)   = putCode [Unwind] (putStack (a1:a:as) state)
+M3>   newState (NGlobal n c) = error "Unwinding with too few arguments",
+M3>                                                        #as < n
+M3>                          = putCode c (putStack as' state), otherwise
+M3>                            where as' = rearrange n heap (a:as)
+GH3>    newState (NGlobal n c)
+GH3>              | length as < n = error "Unwinding with too few arguments"
+GH3>              | otherwise     = putCode c (putStack as' state)
+GH3>                                where as' = rearrange n heap (a:as)
+3>    newState (NInd a1)     = putCode [Unwind] (putStack (a1:as) state)
+
+\end{solution}
+
+\subsection{Mark~4 solutions}
+
+\begin{solution}{gm:X:access4}
+
+4-5> getCode (i, stack, dump, heap, globals, stats) = i
+4-5> putCode i' (i, stack, dump, heap, globals, stats)
+4-5>  = (i', stack, dump, heap, globals, stats)
+
+4-5> getStack (i, stack, dump, heap, globals, stats) = stack
+4-5> putStack stack' (i, stack, dump, heap, globals, stats)
+4-5>  = (i, stack', dump, heap, globals, stats)
+
+4-5> getHeap (i, stack, dump, heap, globals, stats) = heap
+4-5> putHeap heap' (i, stack, dump, heap, globals, stats)
+4-5>  = (i, stack, dump, heap', globals, stats)
+
+4-5> getGlobals (i, stack, dump, heap, globals, stats) = globals
+
+4-5> getStats (i, stack, dump, heap, globals, stats) = stats
+4-5> putStats stats' (i, stack, dump, heap, globals, stats)
+4-5>  = (i, stack, dump, heap, globals, stats')
+
+\end{solution}
+
+\begin{solution}{gm:X:showinstructions4}
+
+M4-5> showInstruction (Slide n)      = (iStr "Slide ")      $iAppend (iNum n)
+M4-5> showInstruction (Alloc n)      = (iStr "Alloc ")      $iAppend (iNum n)
+M4-5> showInstruction (Update n)     = (iStr "Update ")     $iAppend (iNum n)
+M4-5> showInstruction (Pop n)        = (iStr "Pop ")        $iAppend (iNum n)
+GH4-5> showInstruction (Slide n)      = (iStr "Slide ")      `iAppend` (iNum n)
+GH4-5> showInstruction (Alloc n)      = (iStr "Alloc ")      `iAppend` (iNum n)
+GH4-5> showInstruction (Update n)     = (iStr "Update ")     `iAppend` (iNum n)
+GH4-5> showInstruction (Pop n)        = (iStr "Pop ")        `iAppend` (iNum n)
+4-5> showInstruction Unwind         = iStr  "Unwind"
+M4-5> showInstruction (Pushglobal f) = (iStr "Pushglobal ") $iAppend (iStr f)
+M4-5> showInstruction (Pushint n)    = (iStr "Pushint ")    $iAppend (iNum n)
+M4-5> showInstruction (Push n)       = (iStr "Push ")       $iAppend (iNum n)
+GH4-5> showInstruction (Pushglobal f) = (iStr "Pushglobal ") `iAppend` (iStr f)
+GH4-5> showInstruction (Pushint n)    = (iStr "Pushint ")    `iAppend` (iNum n)
+GH4-5> showInstruction (Push n)       = (iStr "Push ")       `iAppend` (iNum n)
+4-5> showInstruction Mkap           = iStr  "Mkap"
+4-5> showInstruction Eval           = iStr  "Eval"
+4-5> showInstruction Add            = iStr  "Add"
+4-5> showInstruction Sub            = iStr  "Sub"
+4-5> showInstruction Mul            = iStr  "Mul"
+4-5> showInstruction Div            = iStr  "Div"
+4-5> showInstruction Neg            = iStr  "Neg"
+4-5> showInstruction Eq             = iStr  "Eq"
+4-5> showInstruction Ne             = iStr  "Ne"
+4-5> showInstruction Lt             = iStr  "Lt"
+4-5> showInstruction Le             = iStr  "Le"
+4-5> showInstruction Gt             = iStr  "Gt"
+4-5> showInstruction Ge             = iStr  "Ge"
+4-5> showInstruction (Cond i1 i2)
+4-5>  = iConcat [iStr "Cond [2: ", shortShowInstructions 2 i1,
+4-5>             iStr ", 1: ",     shortShowInstructions 2 i2, iStr "]"] 
+
+
+
+\end{solution}
+
+\begin{solution}{gm:X:step4}
+
+M4-5> dispatch :: instruction -> gmState -> gmState
+GH4-5> dispatch :: Instruction -> GmState -> GmState
+4-5> dispatch (Slide n)      = slide n
+4-5> dispatch Unwind         = unwind
+4-5> dispatch (Pushglobal f) = pushglobal f
+4-5> dispatch (Push n)       = push n
+4-5> dispatch (Pushint n)    = pushint n
+4-5> dispatch Mkap           = mkap
+4-5> dispatch (Update n)     = update n
+4-5> dispatch (Pop n)        = pop n
+4-5> dispatch (Alloc n)      = alloc n
+4-5> dispatch Add            = arithmetic2 (+)
+4-5> dispatch Sub            = arithmetic2 (-)
+4-5> dispatch Mul            = arithmetic2 (*)
+4-5> dispatch Div            = arithmetic2 (div)
+
+We can also do the @Neg@ instruction.
+
+4-5> dispatch Neg            = arithmetic1 negate
+
+
+M4-5> dispatch Eq             = comparison (=)
+M4-5> dispatch Ne             = comparison (~=)
+GH4-5> dispatch Eq             = comparison (==)
+GH4-5> dispatch Ne             = comparison (/=)
+4-5> dispatch Lt             = comparison (<)
+4-5> dispatch Le             = comparison (<=)
+4-5> dispatch Gt             = comparison (>)
+4-5> dispatch Ge             = comparison (>=)
+
+We add the @Eval@ instruction, and being a {\em lazy} functional programmer,
+I've only used the general case.
+
+4-5> dispatch Eval           = evalop
+4-5> dispatch (Cond i1 i2)   = cond i1 i2 
+
+
+M4-6> cond :: gmCode -> gmCode -> gmState -> gmState
+GH4-6> cond :: GmCode -> GmCode -> GmState -> GmState
+4-6> cond i1 i2 state
+4-6>  = putCode (i'++i) (putStack s state)
+4-6>    where (a:s) = getStack state
+M4-6>         i'    = i1, hLookup (getHeap state) a = NNum 1	|| 1 means true
+M4-6>               = i2, otherwise				|| 0 means false
+GH4-5>        i' | hLookup (getHeap state) a == NNum 1 = i1     -- 1 means true
+GH4-5>           | otherwise                           = i2     -- 0 means false
+GH6>          i' | hLookup (getHeap state) a == (NConstr 2 []) = i1  -- Pack{2,0} means true
+GH6>             | otherwise                                   = i2  -- Pack{1,0} means false
+4-6>          i     = getCode state
+
+M4-> evalop :: gmState -> gmState
+GH4-> evalop :: GmState -> GmState
+4-> evalop state
+4->  = putCode [Unwind] (putStack [a] (putDump d' state))
+4->    where (a:s) = getStack state
+4->          d'    = (getCode state, s): getDump state
+
+We must modify the @Unwind@ instruction, so that it performs the occasional
+popping operation.
+
+M4-5> unwind :: gmState -> gmState
+GH4-5> unwind :: GmState -> GmState
+4-5> unwind state
+4-5>  = newState (hLookup heap a)
+4-5>    where
+4-5>    (a:as)       = getStack state
+4-5>    heap         = getHeap state
+4-5>    ((i',s'):d') = getDump state
+4-5>    newState (NNum n)
+4-5>     = putCode i' (putStack (a:s') (putDump d' state))
+4-5>    newState (NAp a1 a2)
+4-5>     = putCode [Unwind] (putStack (a1:a:as) state)
+4-5>    newState (NGlobal n c)
+M4-5>     = putCode c  (putStack rs state),  #as >= n
+M4-5>     = putCode i' (putStack (last (a:as):s') (putDump d' state)), otherwise
+M4-5>      where rs = rearrange n heap (a:as)
+GH4-5>     | length as >= n = putCode c  (putStack rs state)
+GH4-5>     | otherwise  =  putCode i' (putStack (last (a:as):s') (putDump d' state))
+GH4-5>     where rs = rearrange n heap (a:as)
+4-5>    newState (NInd a1)
+4-5>     = putCode [Unwind] (putStack (a1:as) state)
+
+\end{solution}
+
+\subsection{Mark~5 solutions}
+
+M5-6> compileR :: gmCompiler
+M5-6> compileR (EAp (EAp (EVar op) e1) e2) args
+M5-6> = compileE (EAp (EAp (EVar op) e1) e2) args ++
+M5-6>        [Update n, Pop n, Unwind], member binaryOps op
+M5-6>   where binaryOps = map first builtInDyadic
+M5-6>         n = #args
+M5-6> compileR (EAp (EVar "negate") e) args
+M5-6> = compileE (EAp (EVar "negate") e) args ++ [Update n, Pop n, Unwind]
+M5-6>   where n = #args
+M5-6> compileR (EAp (EAp (EAp (EVar "if") e1) e2) e3) args
+M5-6> = compileE e1 args ++ [Cond (compileR e2 args) (compileR e3 args)]
+M5-6> compileR e args = compileC e args ++ [Update n, Pop n, Unwind]
+M5-6>                   where n = #args
+GH5> compileR :: GmCompiler
+GH5> compileR (EAp (EAp (EVar op) e1) e2) args
+GH5>  | op `elem` binaryOps = compileE (EAp (EAp (EVar op) e1) e2) args ++
+GH5>                            [Update n, Pop n, Unwind]
+GH5>    where binaryOps = map first builtInDyadic
+GH5>          n =  length args
+GH5> compileR (EAp (EVar "negate") e) args
+GH5>  = compileE (EAp (EVar "negate") e) args ++ [Update n, Pop n, Unwind]
+GH5>    where n = length args
+GH5> compileR (EAp (EAp (EAp (EVar "if") e1) e2) e3) args
+GH5>   = compileE e1 args ++ [Cond (compileR e2 args) (compileR e3 args)]
+GH5> compileR e args = compileC e args ++ [Update n, Pop n, Unwind]
+GH5>                    where n = length args
+
+M5> compileE :: gmCompiler
+GH5> compileE :: GmCompiler
+5> compileE (EAp (EAp (EVar op) e1) e2) args
+M5> = compileE e2 args ++ compileE e1 args' ++ [inst], member binaryOps op
+M5>   where binaryOps = map first builtInDyadic
+M5>         inst = aLookup builtInDyadic op (error "This can't happen")
+M5>         args' = argOffset 1 args
+GH5>  | op `elem` binaryOps = compileE e2 args ++ compileE e1 args' ++ [inst]
+GH5>    where binaryOps = map first builtInDyadic
+GH5>          inst = aLookup builtInDyadic op (error "This can't happen")
+GH5>          args' = argOffset 1 args
+5> compileE (EAp (EVar "negate") e) args
+M5> = compileE e args ++ [Neg]
+GH5>  = compileE e args ++ [Neg]
+5> compileE (EAp (EAp (EAp (EVar "if") e1) e2) e3) args
+M5> = compileE e1 args ++ [Cond (compileE e2 args) (compileE e3 args)]
+GH5>  = compileE e1 args ++ [Cond (compileE e2 args) (compileE e3 args)]
+5> compileE (ENum n)      args = [Pushint n]
+5> compileE (ELet recursive defs e)
+M5>                        args = compileLetrec compileE defs e args, recursive
+M5>                             = compileLet    compileE defs e args, otherwise
+GH5>                        args | recursive = compileLetrec compileE defs e args
+GH5>                             | otherwise = compileLet    compileE defs e args
+5> compileE e             args = compileC e args ++ [Eval]
+
+\subsection{Mark~6 solutions}
+\begin{solution}{gm:X:showInstruction5}
+
+M6> showInstruction (Slide n)      = (iStr "Slide ")      $iAppend (iNum n)
+M6> showInstruction (Alloc n)      = (iStr "Alloc ")      $iAppend (iNum n)
+M6> showInstruction (Update n)     = (iStr "Update ")     $iAppend (iNum n)
+M6> showInstruction (Pop n)        = (iStr "Pop ")        $iAppend (iNum n)
+GH6> showInstruction (Slide n)      = (iStr "Slide ")      `iAppend` (iNum n)
+GH6> showInstruction (Alloc n)      = (iStr "Alloc ")      `iAppend` (iNum n)
+GH6> showInstruction (Update n)     = (iStr "Update ")     `iAppend` (iNum n)
+GH6> showInstruction (Pop n)        = (iStr "Pop ")        `iAppend` (iNum n)
+6> showInstruction Unwind         = iStr  "Unwind"
+M6> showInstruction (Pushglobal f) = (iStr "Pushglobal ") $iAppend (iStr f)
+M6> showInstruction (Pushint n)    = (iStr "Pushint ")    $iAppend (iNum n)
+M6> showInstruction (Push n)       = (iStr "Push ")       $iAppend (iNum n)
+GH6> showInstruction (Pushglobal f) = (iStr "Pushglobal ") `iAppend` (iStr f)
+GH6> showInstruction (Pushint n)    = (iStr "Pushint ")    `iAppend` (iNum n)
+GH6> showInstruction (Push n)       = (iStr "Push ")       `iAppend` (iNum n)
+6> showInstruction Mkap           = iStr  "Mkap"
+6> showInstruction Eval           = iStr  "Eval"
+6> showInstruction Add            = iStr  "Add"
+6> showInstruction Sub            = iStr  "Sub"
+6> showInstruction Mul            = iStr  "Mul"
+6> showInstruction Div            = iStr  "Div"
+6> showInstruction Neg            = iStr  "Neg"
+6> showInstruction Eq             = iStr  "Eq"
+6> showInstruction Ne             = iStr  "Ne"
+6> showInstruction Le             = iStr  "Le"
+6> showInstruction Lt             = iStr  "Lt"
+6> showInstruction Ge             = iStr  "Ge"
+6> showInstruction Gt             = iStr  "Gt"
+M6> showInstruction (Pack t a)     = (iStr "Pack ")   $iAppend (iNum t)
+M6>                                  $iAppend (iNum a)
+M6> showInstruction (Casejump nis) = (iStr "Casejump ")   $iAppend
+M6>                                  (showAlternatives nis)
+M6> showInstruction (Split n)      = (iStr "Split ")      $iAppend (iNum n)
+GH6> showInstruction (Pack t a)     = ((iStr "Pack ")   `iAppend` (iNum t))
+GH6>                                  `iAppend` (iNum a)
+GH6> showInstruction (Casejump nis) = (iStr "Casejump ")   `iAppend`
+GH6>                                  (showAlternatives nis)
+GH6> showInstruction (Split n)      = (iStr "Split ")      `iAppend` (iNum n)
+6> showInstruction Print          = iStr "Print"
+
+6> showInstruction (Cond i1 i2)
+6>  = iConcat [iStr "Cond [2: ", shortShowInstructions 2 i1,
+6>             iStr ", 1: ",     shortShowInstructions 2 i2, iStr "]"] 
+
+6-> showAlternatives nis
+6->  = iConcat [iStr "[",
+6->             iInterleave (iStr ", ") (map showLabelInstructions nis),
+6->             iStr "]"]
+6->    where showLabelInstructions (tag, code)
+6->           = iConcat [iNum tag, iStr ": ", shortShowInstructions 2 code]
+
+\end{solution}
+
+\begin{solution}{gm:X:step6}
+
+M6> dispatch :: instruction -> gmState -> gmState
+GH6> dispatch :: Instruction -> GmState -> GmState
+6> dispatch (Slide n)      = slide n
+6> dispatch Unwind         = unwind
+6> dispatch (Pushglobal f) = pushglobal f
+6> dispatch (Push n)       = push n
+6> dispatch (Pushint n)    = pushint n
+6> dispatch Mkap           = mkap
+6> dispatch (Update n)     = update n
+6> dispatch (Pop n)        = pop n
+6> dispatch (Alloc n)      = alloc n
+6> dispatch Add            = arithmetic2 (+)
+6> dispatch Sub            = arithmetic2 (-)
+6> dispatch Mul            = arithmetic2 (*)
+6> dispatch Div            = arithmetic2 (div)
+M6> dispatch Neg            = arithmetic1 neg
+M6> dispatch Eq             = comparison (=)
+M6> dispatch Ne             = comparison (~=)
+GH6> dispatch Neg            = arithmetic1 negate
+GH6> dispatch Eq             = comparison (==)
+GH6> dispatch Ne             = comparison (/=)
+6> dispatch Lt             = comparison (<)
+6> dispatch Le             = comparison (<=)
+6> dispatch Gt             = comparison (>)
+6> dispatch Ge             = comparison (>=)
+6> dispatch Eval           = evalop
+6> dispatch (Cond i1 i2)   = cond i1 i2 
+6> dispatch (Casejump alts)= casejump alts
+6> dispatch (Split n)      = split n
+6> dispatch Print          = gmprint
+6> dispatch (Pack t a)     = pack t a
+
+The new instructions, beginning with @Casejump@:
+
+6-> casejump alts state
+6->  = putCode (i ++ getCode state) state
+6->    where (NConstr t as) = hLookup (getHeap state) (hd (getStack state))
+6->          i = aLookup alts t (error ("No case for constructor" ++ show t))
+
+Next consider @Split@
+
+M6-> split :: num -> gmState -> gmState
+GH6> split :: Int -> GmState -> GmState
+6-> split j state
+6->  = putStack (as++s) state
+6->    where (NConstr t as) = hLookup (getHeap state) a
+6->          (a:s)          = getStack state
+
+Next @Print@
+
+M6-> print :: gmState -> gmState
+M6-> print state
+M6-> = newState (hLookup (getHeap state) a) state
+M6->   where
+M6->   newState (NConstr t as) = putCode (printcode (#as) ++ getCode state) .
+M6->                             putStack (as++s)
+M6->   newState (NNum n)       = putOutput (show n) . putStack s
+M6->   newState n              = error "Print of non data structure"
+M6->   (a:s) = getStack state
+GH6-> gmprint :: GmState -> GmState  -- gmprint not print, to avoid name clash
+GH6-> gmprint state
+GH6->  = newState (hLookup (getHeap state) a) state
+GH6->    where
+GH6->    newState (NConstr t as) = putOutput ("Pack{"++show t++","++ show(length as)++"}"). -- KH
+GH6->				  putCode (printcode (length as) ++ getCode state) .
+GH6->                              putStack (as++s)
+GH6->    newState (NNum n)       = putOutput (show n) . putStack s
+GH6->    newState n              = error "Print of non data structure"
+GH6->    (a:s) = getStack state
+
+6-> printcode 0     = []
+6-> printcode (n+1) = Eval: Print: printcode n
+
+Finally, @Pack@
+
+M6-> pack :: num -> num -> gmState -> gmState
+GH6-> pack :: Int -> Int -> GmState -> GmState
+6-> pack t a state
+6->  = putHeap heap' (putStack (addr: drop a s) state)
+6->    where s = getStack state
+6->          (heap', addr) = hAlloc (getHeap state) (NConstr t (take a s))
+
+We also need to modify @Unwind@ (again).
+
+
+M6-> unwind :: gmState -> gmState
+GH6-> unwind :: GmState -> GmState
+6-> unwind state
+6->  = newState (hLookup heap a)
+6->    where
+6->    (a:as)       = getStack state
+6->    heap         = getHeap state
+6->    ((i',s'):d') = getDump state
+6->    newState (NNum n)
+6->     = putCode i' (putStack (a:s') (putDump d' state))
+6->    newState (NAp a1 a2)
+6->     = putCode [Unwind] (putStack (a1:a:as) state)
+6->    newState (NGlobal n c)
+M6->     = putCode c  (putStack rs state),  #as >= n
+M6->     = putCode i' (putStack (last (a:as):s') (putDump d' state)), otherwise
+M6->      where rs = rearrange n heap (a:as)
+GH6->     | length as >= n = putCode c  (putStack rs state)
+GH6->     | otherwise      = putCode i' (putStack (last (a:as):s') (putDump d' state))
+GH6->       where rs = rearrange n heap (a:as)
+6->    newState (NInd a1)
+6->     = putCode [Unwind] (putStack (a1:as) state)
+6->    newState (NConstr t as)
+6->     = putCode i' (putStack (a:s') (putDump d' state))
+
+\end{solution}
+
+\begin{solution}{gm:X:access6}
+
+6> getCode (o, i, stack, dump, heap, globals, stats) = i
+6> putCode i' (o, i, stack, dump, heap, globals, stats)
+6>  = (o, i', stack, dump, heap, globals, stats)
+
+6> getStack (o, i, stack, dump, heap, globals, stats) = stack
+6> putStack stack' (o, i, stack, dump, heap, globals, stats)
+6>  = (o, i, stack', dump, heap, globals, stats)
+
+6> getDump (o, i, stack, dump, heap, globals, stats) = dump
+6> putDump dump' (o, i, stack, dump, heap, globals, stats)
+6>  = (o, i, stack, dump', heap, globals, stats)
+
+6> getHeap (o, i, stack, dump, heap, globals, stats) = heap
+6> putHeap heap' (o, i, stack, dump, heap, globals, stats)
+6>  = (o, i, stack, dump, heap', globals, stats)
+
+6> getGlobals (o, i, stack, dump, heap, globals, stats) = globals
+6> putGlobals globals' (o, i, stack, dump, heap, globals, stats) -- KH for exercise
+6>  = (o, i, stack, dump, heap, globals', stats)
+
+
+6> getStats (o, i, stack, dump, heap, globals, stats) = stats
+6> putStats stats' (o, i, stack, dump, heap, globals, stats)
+6>  = (o, i, stack, dump, heap, globals, stats')
+
+\end{solution}
+
+\begin{solution}{gm:X:compiler6}
+
+
+M6> compile :: coreProgram -> gmState
+GH6> compile :: CoreProgram -> GmState
+6> compile program
+6>  = ([], initialCode, [], [], heap, globals, statInitial)
+6>    where (heap, globals) = buildInitialHeap program
+
+M6-> initialCode :: gmCode
+GH6-> initialCode :: GmCode
+6-> initialCode = [Pushglobal "main", Eval, Print]
+
+
+M6-> compileC :: gmCompiler
+GH6-> compileC :: GmCompiler
+6-> compileC (EConstr t 0) args = [Pack t 0]
+M6-> compileC (EVar v)      args = [Push n],       member (aDomain args) v
+M6->                             = [Pushglobal v], otherwise
+M6->                               where n = aLookup args v (error "")
+GH6-> compileC (EVar v)      args | v `elem` (aDomain args) = [Push n]
+GH6->                             | otherwise = [Pushglobal v]
+GH6->                               where n = aLookup args v (error "")
+6-> compileC (ENum n)      args = [Pushint n]
+6-> compileC (ELet recursive defs e)
+M6->                        args = compileLetrec compileC defs e args, recursive
+M6->                             = compileLet    compileC defs e args, otherwise
+GH6->                        args | recursive = compileLetrec compileC defs e args
+GH6->                             | otherwise = compileLet    compileC defs e args
+6-> compileC (EAp e1 e2)   args
+M6-> = compileCS (reverse spine) args,                     saturatedCons spine
+M6-> = compileC e2 args ++ compileC e1 (argOffset 1 args) ++ [Mkap], otherwise
+M6->   where spine = makeSpine (EAp e1 e2)
+M6->         saturatedCons (EConstr t a:es) = a = #es
+M6->         saturatedCons (e:es)           = False
+GH6->  | saturatedCons spine = compileCS (reverse spine) args
+GH6->  | otherwise = compileC e2 args ++ compileC e1 (argOffset 1 args) ++ [Mkap]
+GH6->    where spine = makeSpine (EAp e1 e2)
+GH6->          saturatedCons (EConstr t a:es) = a == length es
+GH6->          saturatedCons (e:es)           = False
+
+6-> makeSpine (EAp e1 e2) = makeSpine e1 ++ [e2]
+6-> makeSpine e           = [e]
+
+6-> compileCS [EConstr t a] args = [Pack t a]
+6-> compileCS (e:es)        args = compileC  e args ++
+6->                                compileCS es (argOffset 1 args)
+
+M6> compileE :: gmCompiler
+GH6> compileE :: GmCompiler
+6> compileE (EAp (EAp (EVar op) e1) e2) args
+M6> = compileE e2 args ++ compileE e1 args' ++ [inst], member binaryOps op
+M6>   where binaryOps = map first builtInDyadic
+M6>         inst = aLookup builtInDyadic op (error "This can't happen")
+M6>         args' = argOffset 1 args
+GH6>  | op `elem` binaryOps = compileE e2 args ++ compileE e1 args' ++ [inst]
+GH6>    where binaryOps = map first builtInDyadic
+GH6>          inst = aLookup builtInDyadic op (error "This can't happen")
+GH6>          args' = argOffset 1 args
+6> compileE (EAp (EVar "negate") e) args
+6>  = compileE e args ++ [Neg]
+6> compileE (EAp (EAp (EAp (EVar "if") e1) e2) e3) args
+6>  = compileE e1 args ++ [Cond (compileE e2 args) (compileE e3 args)]
+6> compileE (ENum n)      args = [Pushint n]
+6> compileE (ELet recursive defs e)
+M6>                        args = compileLetrec compileE defs e args, recursive
+M6>                             = compileLet    compileE defs e args, otherwise
+GH6>                        args | recursive = compileLetrec compileE defs e args
+GH6>                             | otherwise = compileLet    compileE defs e args
+6> compileE (ECase e as)  args = compileE e args ++
+6>                               [Casejump (compileAlts compileE' as args)]
+6> compileE e             args = compileC e args ++ [Eval]
+
+\end{solution}
+
+\subsection{Mark~6: solutions}
+
+\begin{solution}{gm:X:access6}
+
+7> getOutput (o, i, stack, dump, vstack, heap, globals, stats) = o
+7> putOutput o' (o, i, stack, dump, vstack, heap, globals, stats)
+7>  = (o', i, stack, dump, vstack, heap, globals, stats)
+
+7> getCode (o, i, stack, dump, vstack, heap, globals, stats) = i
+7> putCode i' (o, i, stack, dump, vstack, heap, globals, stats)
+7>  = (o, i', stack, dump, vstack, heap, globals, stats)
+
+7> getStack (o, i, stack, dump, vstack, heap, globals, stats) = stack
+7> putStack stack' (o, i, stack, dump, vstack, heap, globals, stats)
+7>  = (o, i, stack', dump, vstack, heap, globals, stats)
+
+7> getDump (o, i, stack, dump, vstack, heap, globals, stats) = dump
+7> putDump dump' (o, i, stack, dump, vstack, heap, globals, stats)
+7>  = (o, i, stack, dump', vstack, heap, globals, stats)
+
+7> getHeap (o, i, stack, dump, vstack, heap, globals, stats) = heap
+7> putHeap heap' (o, i, stack, dump, vstack, heap, globals, stats)
+7>  = (o, i, stack, dump, vstack, heap', globals, stats)
+
+7> getGlobals (o, i, stack, dump, vstack, heap, globals, stats) = globals
+7> putGlobals globals' (o, i, stack, dump, heap, globals, stats) -- KH for exercise
+7>  = (o, i, stack, dump, heap, globals', stats)
+
+7> getStats (o, i, stack, dump, vstack, heap, globals, stats) = stats
+7> putStats stats' (o, i, stack, dump, vstack, heap, globals, stats)
+7>  = (o, i, stack, dump, vstack, heap, globals, stats')
+
+\end{solution}
+
+M7> primitive1 :: (num -> num)             || operator
+M7>                -> (gmState -> gmState) || state transition
+GH7> primitive1 :: (Int -> Int)             -- operator
+GH7>                -> (GmState -> GmState) -- state transition
+7>
+7> primitive1 op state
+7>  = putVStack (op n: ns) state
+7>    where (n:ns) = getVStack state
+
+M7> primitive2 :: (num -> num -> num)        || operator
+M7>                -> (gmState -> gmState)   || state transition
+GH7> primitive2 :: (Int -> Int -> Int)        -- operator
+GH7>                -> (GmState -> GmState)   -- state transition
+7>
+7> primitive2 op state
+7>  = putVStack (op n0 n1: ns) state
+7>    where (n0:n1:ns) = getVStack state
+
+7> arithmetic1 = primitive1
+
+7> arithmetic2 = primitive2
+
+7> comparison op = primitive2 op'
+M7>                 where op' x y = 2, op x y	|| 2 is the tag of True
+M7>                               = 1, otherwise	|| 1 is the tag of False
+GH7>                 where op' x y | op x y = 2    -- 2 is the tag of True
+GH7>                               | otherwise = 1 -- 1 is the tag of False
+
+
+\begin{solution}{gm:X:instruction6}
+
+M7> showInstruction (Slide n)      = (iStr "Slide ")      $iAppend (iNum n)
+M7> showInstruction (Alloc n)      = (iStr "Alloc ")      $iAppend (iNum n)
+M7> showInstruction (Update n)     = (iStr "Update ")     $iAppend (iNum n)
+M7> showInstruction (Pop n)        = (iStr "Pop ")        $iAppend (iNum n)
+GH7> showInstruction (Slide n)      = (iStr "Slide ")      `iAppend` (iNum n)
+GH7> showInstruction (Alloc n)      = (iStr "Alloc ")      `iAppend` (iNum n)
+GH7> showInstruction (Update n)     = (iStr "Update ")     `iAppend` (iNum n)
+GH7> showInstruction (Pop n)        = (iStr "Pop ")        `iAppend` (iNum n)
+7> showInstruction Unwind         = iStr  "Unwind"
+M7> showInstruction (Pushglobal f) = (iStr "Pushglobal ") $iAppend (iStr f)
+M7> showInstruction (Pushint n)    = (iStr "Pushint ")    $iAppend (iNum n)
+M7> showInstruction (Push n)       = (iStr "Push ")       $iAppend (iNum n)
+GH7> showInstruction (Pushglobal f) = (iStr "Pushglobal ") `iAppend` (iStr f)
+GH7> showInstruction (Pushint n)    = (iStr "Pushint ")    `iAppend` (iNum n)
+GH7> showInstruction (Push n)       = (iStr "Push ")       `iAppend` (iNum n)
+7> showInstruction Mkap           = iStr  "Mkap"
+7> showInstruction Eval           = iStr  "Eval"
+7> showInstruction Add            = iStr  "Add"
+7> showInstruction Sub            = iStr  "Sub"
+7> showInstruction Mul            = iStr  "Mul"
+7> showInstruction Div            = iStr  "Div"
+7> showInstruction Neg            = iStr  "Neg"
+7> showInstruction Eq             = iStr  "Eq"
+7> showInstruction Ne             = iStr  "Ne"
+7> showInstruction Le             = iStr  "Le"
+7> showInstruction Lt             = iStr  "Lt"
+7> showInstruction Ge             = iStr  "Ge"
+7> showInstruction Gt             = iStr  "Gt"
+M7> showInstruction (Pack t a)     = (iStr "Pack ")   $iAppend (iNum t)
+M7>                                                       $iAppend (iNum a)
+GH7> showInstruction (Pack t a)     = ((iStr "Pack ")   `iAppend` (iNum t))
+GH7>                                                       `iAppend` (iNum a)
+M7> showInstruction (Casejump nis) = (iStr "Casejump ")   $iAppend
+GH7> showInstruction (Casejump nis) = (iStr "Casejump ")   `iAppend`
+7>                                  (showAlternatives nis)
+M7> showInstruction (Split n)      = (iStr "Split ")      $iAppend (iNum n)
+GH7> showInstruction (Split n)      = (iStr "Split ")      `iAppend` (iNum n)
+7> showInstruction Print          = iStr "Print"
+7> showInstruction Mkbool         = iStr "Mkbool"
+7> showInstruction Mkint          = iStr "Mkint"
+7> showInstruction Get            = iStr "Get"
+M7> showInstruction (Pushbasic n)  = iStr "Pushbasic" $iAppend (iNum n)
+GH7> showInstruction (Pushbasic n)  = iStr "Pushbasic" `iAppend` (iNum n)
+7> showInstruction Return         = iStr "Return"
+M7> showInstruction (Cond t f)     = (iStr "Cond ")   $iAppend
+GH7> showInstruction (Cond t f)     = (iStr "Cond ")   `iAppend`
+7>                                  (showAlternatives [(2,t),(1,f)])
+
+
+M7> dispatch :: instruction -> gmState -> gmState
+GH7> dispatch :: Instruction -> GmState -> GmState
+7> dispatch Unwind         = unwind
+7> dispatch (Pushglobal f) = pushglobal f
+7> dispatch (Push n)       = push n
+7> dispatch (Pushint n)    = pushint n
+7> dispatch Mkap           = mkap
+7> dispatch (Update n)     = update n
+7> dispatch (Pop n)        = pop n
+7> dispatch (Alloc n)      = alloc n
+7> dispatch Add            = arithmetic2 (+)
+7> dispatch Sub            = arithmetic2 (-)
+7> dispatch Mul            = arithmetic2 (*)
+7> dispatch Div            = arithmetic2 (div)
+M7> dispatch Neg            = arithmetic1 neg
+GH7> dispatch Neg            = arithmetic1 negate
+M7> dispatch Eq             = comparison (=)
+GH7> dispatch Eq             = comparison (==)
+M7> dispatch Ne             = comparison (~=)
+GH7> dispatch Ne             = comparison (/=)
+7> dispatch Lt             = comparison (<)
+7> dispatch Le             = comparison (<=)
+7> dispatch Gt             = comparison (>)
+7> dispatch Ge             = comparison (>=)
+7> dispatch Eval           = evalop
+7> dispatch (Cond i1 i2)   = cond i1 i2 
+7> dispatch (Casejump alts)= casejump alts
+7> dispatch (Split n)      = split n
+7> dispatch Print          = gmprint
+7> dispatch Mkbool         = mkbool
+7> dispatch Mkint          = mkint
+7> dispatch Get            = get
+7> dispatch (Pushbasic n)  = pushbasic n
+M7> dispatch Return         = return
+GH7> dispatch Return         = gmreturn
+7> dispatch (Pack t a)	   = pack t a -- KH
+
+M7> return :: gmState -> gmState
+GH7> gmreturn :: GmState -> GmState
+M7> return state
+GH7> gmreturn state
+7>  = putDump d (putStack (a:s') (putCode i' state))
+7>    where (a:s)       = getStack state
+7>          ((i',s'):d) = getDump state
+
+We also change the @Eval@ instruction.
+
+7> step (o, Eval:i, a:s, d, v, heap, globals, stats)
+7>  = newState (hLookup heap a)
+7>    where
+7>    newState (NNum n)       = (o, i, a:s, d, v, heap, globals, stats)
+7>    newState (NConstr t as) = (o, i, a:s, d, v, heap, globals, stats)
+7>    newState n              = (o, [Unwind], [a], (i,s):d, v, heap, globals, stats)
+7> step state = dispatch i (putCode is state)
+7>              where (i:is) = getCode state
+
+M7> mkbool :: gmState -> gmState
+GH7> mkbool :: GmState -> GmState
+7> mkbool state
+7>  = putStack (a:getStack state) (putVStack v (putHeap heap' state))
+7>    where (heap',a) = hAlloc (getHeap state) (NConstr x [])
+7>          (x:v)     = getVStack state
+
+M7> mkint :: gmState -> gmState
+GH7> mkint :: GmState -> GmState
+7> mkint state
+7>  = putStack (a:getStack state) (putVStack v (putHeap heap' state))
+7>    where (heap',a) = hAlloc (getHeap state) (NNum x)
+7>          (x:v)     = getVStack state
+
+M7> get :: gmState -> gmState
+GH7> get :: GmState -> GmState
+7> get state
+7>  = newState (hLookup (getHeap state) a) (putStack s state)
+7>    where newState (NConstr n []) = putVStack (n:v) 
+7>          newState (NNum n)       = putVStack (n:v)
+7>          newState (NInd a')      = newState (hLookup (getHeap state) a')
+7>          newState n              = error "Get of a non-number or bool"
+7>          v = getVStack state
+7>          (a:s) = getStack state
+
+M7> cond :: gmCode -> gmCode -> gmState -> gmState
+GH7> cond :: GmCode -> GmCode -> GmState -> GmState
+7> cond t f state
+GH7> {- KH -- this looks bogus -- we should have NConstr 1 0 on the A Stack!
+7>  = putCode i (putVStack v state)
+7>    where (x:v) = getVStack state
+M7>          i = f ++ getCode state, x=1		|| 1 is the tag of False
+M7>            = t ++ getCode state, otherwise	|| 2 is the tag of True
+GH7>          i | x == 1 = f ++ getCode state	-- 1 is the tag of False
+GH7>            | otherwise = t ++ getCode state	-- 2 is the tag of True
+GH7> KH -}
+GH7>  = casejump [(1,f),(2,t)] state
+GH7> {- KH Section ends here! -}
+
+M7> pushbasic :: num -> gmState -> gmState
+GH7> pushbasic :: Int -> GmState -> GmState
+7> pushbasic n state
+7>  = putVStack (n:getVStack state) state
+
+
+We also need to adjust comparison, so that it now returns a ``boolean'' on the
+value stack.
+
+
+M7> instruction ::= Slide num               |
+M7>                 Alloc num               |
+M7>                 Update num              |
+M7>                 Pop num                 |
+M7>                 Unwind                  |
+M7>                 Pushglobal name         |
+M7>                 Pushint num             |
+M7>                 Push num                |
+M7>                 Mkap                    |
+M7>                 Eval                    |
+M7>                 Add                     |
+M7>                 Sub                     |
+M7>                 Mul                     |
+M7>                 Div                     |
+M7>                 Neg                     |
+M7>                 Eq                      |
+M7>                 Ne                      |
+M7>                 Le                      |
+M7>                 Lt                      |
+M7>                 Ge                      |
+M7>                 Gt                      |
+M7>                 Negate                  |
+M7>                 Pack num num            |
+M7>                 Casejump [(num,gmCode)] |
+M7>                 Split num               |
+M7>                 Print                   |
+M7>                 Pushbasic num           |
+M7>                 Mkbool                  |
+M7>                 Mkint                   |
+M7>                 Get                     |
+M7>                 Return                  |
+M7>                 Cond gmCode gmCode
+GH7> data Instruction = Slide Int
+GH7>                 | Alloc Int
+GH7>                 | Update Int
+GH7>                 | Pop Int
+GH7>                 | Unwind
+GH7>                 | Pushglobal Name
+GH7>                 | Pushint Int
+GH7>                 | Push Int
+GH7>                 | Mkap
+GH7>                 | Eval
+GH7>                 | Add
+GH7>                 | Sub
+GH7>                 | Mul
+GH7>                 | Div
+GH7>                 | Neg
+GH7>                 | Eq 
+GH7>                 | Ne 
+GH7>                 | Le 
+GH7>                 | Lt 
+GH7>                 | Ge 
+GH7>                 | Gt 
+GH7>                 | Negate
+GH7>                 | Pack Int Int
+GH7>                 | Casejump [(Int,GmCode)]
+GH7>                 | Split Int
+GH7>                 | Print
+GH7>                 | Pushbasic Int
+GH7>                 | Mkbool
+GH7>                 | Mkint 
+GH7>                 | Get   
+GH7>                 | Return
+GH7>                 | Cond GmCode GmCode
+
+\end{solution}
+
+
+The cases for local definitions and casejumps remain the same as they
+were in the Mark~5 machine.
+
+
+M7> compileR :: gmCompiler
+GH7> compileR :: GmCompiler
+7> compileR (EAp (EAp (EVar op) e1) e2) args
+M7> = compileE (EAp (EAp (EVar op) e1) e2) args ++
+M7>        [Update n, Pop n, Unwind], member binaryOps op
+M7>   where binaryOps = map first builtInDyadic
+M7>         n = #args
+GH7>  | op `elem` binaryOps = compileE (EAp (EAp (EVar op) e1) e2) args ++
+GH7>         [Update n, Pop n, Unwind]
+GH7>    where binaryOps = map first builtInDyadic
+GH7>          n = length args
+7> compileR (EAp (EVar "negate") e) args
+7>  = compileE (EAp (EVar "negate") e) args ++ [Update n, Pop n, Unwind]
+M7>    where n = #args
+GH7>    where n = length args
+7> compileR (EAp (EAp (EAp (EVar "if") e1) e2) e3) args
+7>  = compileE e1 args ++ [Cond (compileR e2 args) (compileR e3 args)]
+7> compileR (ECase e as) args = compileE e args
+7> compileR (ELet recursive defs e)
+M7>                        env = compileLetrec compileR defs e env, recursive
+M7>                            = compileLet    compileR defs e env, otherwise
+GH7>                        env | recursive = compileLetrec compileR defs e env
+GH7>                            | otherwise = compileLet    compileR defs e env
+7> compileR (ECase e as)  env = compileE e env ++
+7>                              [Casejump (compileAlts compileR' as env)]
+7> compileR e args = compileC e args ++ [Update n, Pop n, Unwind]
+M7>                   where n = #args
+GH7>                   where n = length args
+
+We will also need @compileR'@ to compile code for alternatives that
+are compiled using the \tR{}-scheme.
+
+7> compileR' n expr env = [Split n] ++ compileR expr env
+
+
+M7> compileE :: gmCompiler
+GH7> compileE :: GmCompiler
+7> compileE (EAp (EAp (EVar op) e1) e2) args
+M7> = compileB (EAp (EAp (EVar op) e1) e2) args ++ [Mkint],
+M7>                               member ["+", "-", "*", "/"] op
+M7> = compileB (EAp (EAp (EVar op) e1) e2) args ++ [Mkbool],
+M7>                               member ["==", "~+", "<", "<=", ">", ">="] op
+GH7>  | op `elem`["+", "-", "*", "/"] 
+GH7>    = compileB (EAp (EAp (EVar op) e1) e2) args ++ [Mkint]
+GH7>  | op `elem` ["==", "~+", "<", "<=", ">", ">="] 
+GH7>    = compileB (EAp (EAp (EVar op) e1) e2) args ++ [Mkbool]
+7> compileE (EAp (EVar "negate") e) args
+7>  = compileB (EAp (EVar "negate") e) args ++ [Mkint]
+7> compileE (EAp (EAp (EAp (EVar "if") e1) e2) e3) args
+7>  = compileB e1 args ++ [Cond (compileE e2 args) (compileE e3 args)]
+7> compileE (ENum n)      args = [Pushint n]
+7> compileE (ELet recursive defs e)
+M7>                        args = compileLetrec compileE defs e args, recursive
+M7>                             = compileLet    compileE defs e args, otherwise
+GH7>                        args | recursive = compileLetrec compileE defs e args
+GH7>                             | otherwise = compileLet    compileE defs e args
+7> compileE (ECase e as)  args = compileE e args ++
+7>                               [Casejump (compileAlts compileE' as args)]
+7> compileE e             args = compileC e args ++ [Eval]
+
+In the Mark~5 machine, we will only work witha restricted set of
+operators. We record the salient information in @strictOperators@.
+
+M6-> strictOperators :: assoc name (instruction, num)
+GH6-> strictOperators :: ASSOC Name (Instruction, Int)
+6-> strictOperators
+6->  = [("+", (Add, 2)), ("-", (Sub, 2)), ("*", (Mul, 2)), ("/", (Div, 2)),
+6->     ("negate", (Neg, 1)),
+6->     ("==", (Eq, 2)), ("~=", (Ne, 2)), (">=", (Ge, 2)),
+6->     (">",  (Gt, 2)), ("<=", (Le, 2)), ("<",  (Lt, 2))]
+
+7> compileB (EAp (EAp (EAp (EVar "if") e1) e2) e3) env
+7>  = compileB e1 env ++
+7>    [Cond (compileB e2 env) (compileB e3 env)]
+
+7> compileB (ENum n)    env = [Pushbasic n]
+
+7> compileB (EAp (EAp (EVar "+")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Add]
+7> compileB (EAp (EAp (EVar "-")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Sub]
+7> compileB (EAp (EAp (EVar "*")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Mul]
+7> compileB (EAp (EAp (EVar "/")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Div]
+
+7> compileB (EAp (EAp (EVar "==")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Eq]
+7> compileB (EAp (EAp (EVar "~=")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Ne]
+7> compileB (EAp (EAp (EVar ">")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Gt]
+7> compileB (EAp (EAp (EVar ">=")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Ge]
+7> compileB (EAp (EAp (EVar "<")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Lt]
+7> compileB (EAp (EAp (EVar "<=")  e1) e2) env
+7>  = compileB e2 env ++ compileB e1 env ++ [Le]
+
+7> compileB (EAp (EVar "negate")  e) env
+7>  = compileB e env ++ [Neg]
+
+It is possible to compile code to propagate the \tB{}-scheme through
+local definitions.
+
+7> compileB (ELet recursive defs e)
+M7>                      env = compileLetrec compileB defs e env, recursive
+M7>                          = compileLet    compileB defs e env, otherwise
+GH7>                      env | recursive = compileLetrec compileB defs e env
+GH7>                          | otherwise = compileLet    compileB defs e env
+
+Finally we give a default case, which is used if none of the above
+special cases arises.
+
+7> compileB e            env = compileE e env ++ [Get]
+
+This concludes the presentation of the Mark~7 machine.

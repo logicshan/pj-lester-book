@@ -1,0 +1,7 @@
+f x y = letrec
+	  g = \p. h p + x ;
+	  h = \q. k + y + q;
+	  k = g y
+	in
+	g k ;
+main = f 4 5

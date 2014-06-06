@@ -1,0 +1,6 @@
+length xs = caseList xs 0 length1;
+length1 x xs = 1 + length xs;
+downfrom n = if (n == 0) Nil (LCons n (downfrom (n-1)));
+main = length (downfrom 3)
+
+

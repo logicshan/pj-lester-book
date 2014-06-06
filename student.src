@@ -1,0 +1,53 @@
+% $Date: 91/09/10 14:48:40 $
+% $Revision: 1.4 $
+%\batchmode
+%\includeonly{title,preface,language,template,gm,tim,utils,bibliography}
+%\includeonly{gm}
+\documentstyle[11pt,makeidx,fpstyle]{report}
+\setcounter{secnumdepth}{2}
+
+\makeindex
+
+% "see" index entries
+%
+\index{WHNF|see{weak head normal form}}
+\index{Three Instruction Machine|see{TIM}}
+\index{constant applicative form|see{CAF}}
+\index{data structures|see{algebraic data types}}
+\index{algebraic data types|see{data structures}}
+\index{structured data|see{data structures}}
+\index{constructors|see{data structures}}
+
+% The book itself
+%
+
+\begin{document}
+\include{title}
+\include{preface}
+\include{language}
+\include{template}
+\include{gm}
+\include{tim}
+\include{pargm}
+\include{lambda}
+
+\appendix
+\include{utils}
+\include{coreprog}
+\include{biblio}
+
+\indexprelude{\section*{Subject index}
+Underlined entries in the index indicate where terms or compilation schemes are
+defined.
+}
+\input{student.main.ind}
+
+\indexprelude{\section*{Code index}
+This index indicates the point of 
+definition of every Miranda function defined in the book (underlined entries), 
+and every reference to typewriter-font material in 
+running text (non-underlined entries).
+}
+\input{student.prog.ind}
+
+\end{document}

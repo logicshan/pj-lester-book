@@ -1,0 +1,6 @@
+downfrom n = if (n == 0) Pack{1,0} (Pack{2,2} n (downfrom (n-1)));
+length xs = case xs of 
+		<1> -> 0 ;
+		<2> p ps -> 1 + length ps ;
+		
+main = Pack{2,2} (length (downfrom 3)) Pack{1,0}

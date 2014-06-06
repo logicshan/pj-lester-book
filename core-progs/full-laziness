@@ -1,0 +1,7 @@
+f x = let z = f (x+2)
+      in
+      let g = \y . x + z + y
+      in
+      g 3 + g 4	;
+main =  f 4
+

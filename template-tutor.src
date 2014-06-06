@@ -1,0 +1,511 @@
+\chapter{Template-instantiation}
+
+\section{Mark 1: the basic machine}
+
+Solution to exercise 2.3 must exist for template1 to compile without error.
+(change Makefile to include template-tutor.src for template1.lhs)
+
+GH1> multFinal (_, m, d, _) | m == 0 && d == 0  = True
+GH1>                        | otherwise         = False
+
+Exercises~\ref{ex:templ:test} to \ref{ex:templ:stats} are straightforward.
+
+\begin{solution}{ex:templ:eval}
+If the proposed change is made, only the state {\em before} the one
+causing the error is printed.  Both equations of the proposed @eval@ return
+@state@ at the head of its result list, but no list at all will be returned
+until @tiFinal@ returns its result.  We can get a bit more output by
+returning @state@ as the head of the list, and using @tiFinal@ to decide whether
+the rest of the list is empty (as the real @eval@ does).  
+
+This strictness bug actually caught one of the authors out!
+\end{solution}
+
+\section{Mark 2: Let(rec) expressions}
+
+Here is the code for @instantiateLet@, which deals with both the recursive and
+non-recursive case.
+
+2-> instantiateLet isrec defs body heap old_env
+2->  = instantiate body heap1 new_env
+2->    where 
+2->    (heap1, extra_bindings) = mapAccuml instantiate_rhs heap defs
+2->
+2->    new_env = extra_bindings ++ old_env
+M2->    rhs_env = old_env,	~isrec
+M2->            = new_env,	isrec
+GH2->    rhs_env | isrec     = new_env
+GH2->            | otherwise = old_env
+2-> 
+2->    instantiate_rhs heap (name, rhs)
+2->     = (heap1, (name, addr)) 
+2->       where 
+2->       (heap1, addr) = instantiate rhs heap rhs_env
+
+The @mapAccuml@ runs down the list, instantiating the right-hand side
+of each definition, returning the extra bindings created thereby,
+and of course the new heap.
+The old bindings are augmented with the extra bindings to create 
+@new_env@, which is used in the instantiation of the body of
+the @let(rec)@.
+
+Each right-hand side is instantiated in the environment @rhs_env@,
+which is defined to be @old_env@ for the non-recursive case, and
+@new_env@ for the recursive case.  We have tied the recursive knot
+in Miranda!
+This is possible because the addresses produced for the new graphs do not
+depend on @rhs_env@.
+
+\section{Mark 3: Updating}
+
+Here is the code for updating, including the 
+optimisation of Section~\ref{sect:templ:inst-and-upd}
+
+\subsection{The new @scStep@ function}
+
+First, we must redefine @scStep@ to call @instantiateAndUpdate@.  It
+drops one fewer addresses off the stack than before, because the root
+of the redex can now remain.
+
+M3-> scStep   :: tiState -> name -> [name] -> coreExpr -> tiState
+GH3-> scStep   :: TiState -> Name -> [Name] -> CoreExpr -> TiState
+3-> scStep (stack, dump, heap, globals, stats) sc_name arg_names body
+3->  = (new_stack, dump, new_heap, globals, stats)
+3->    where
+M3->    new_stack = drop (#arg_names) stack
+GH3->    new_stack = drop (length arg_names) stack
+3->    root = hd new_stack
+3->    new_heap = instantiateAndUpdate body root heap (bindings ++ globals)
+M3->    bindings = zip2 arg_names (getArgs heap stack)
+GH3->    bindings = zip2 arg_names (getargs heap stack)
+
+\subsection{The new instantiation function}
+
+Next, we give the new definition for @instantiateAndUpdate@:
+
+3-> instantiateAndUpdate (ENum n) upd_addr heap env 
+3->  = hUpdate heap upd_addr (NNum n)
+3->
+3-> instantiateAndUpdate (EAp e1 e2) upd_addr heap env 
+3->  = hUpdate heap2 upd_addr (NAp a1 a2) 
+3->    where 
+3->    (heap1, a1) = instantiate e1 heap  env
+3->    (heap2, a2) = instantiate e2 heap1 env
+3->
+3-> instantiateAndUpdate (EVar v) upd_addr heap env
+3->   = hUpdate heap upd_addr (NInd var_addr)
+3->     where
+3->     var_addr = aLookup env v
+3->	                 (error ("Undefined name " ++ show v))
+
+For the @let(rec)@ case, notice the recursive call to @instantiateAndUpdate@
+when instantiating the body.
+
+3-> instantiateAndUpdate (ELet isrec defs body) upd_addr heap old_env
+3->  = instantiateAndUpdate body upd_addr heap1 new_env
+3->    where 
+3->    (heap1, extra_bindings) = mapAccuml instantiate_rhs heap defs
+3->
+3->    new_env = extra_bindings ++ old_env
+M3->    rhs_env = old_env,	~isrec
+M3->	       = new_env,	isrec
+GH3->    rhs_env = if isrec then new_env else old_env
+3-> 
+3->    instantiate_rhs heap (name, rhs)
+3->     = (heap1, (name, addr)) 
+3->       where 
+3->       (heap1, addr) = instantiate rhs heap rhs_env
+
+The case for constructors is handled as before:
+
+3-> instantiateAndUpdate (EConstr tag arity) upd_addr h b 
+3->		= instantiateAndUpdateConstr tag arity upd_addr h b
+
+3-4> instantiateAndUpdateConstr tag arity upd_addr h b
+3-4>	= error "instantiateAndUpdateConstr: not implemented yet"
+
+\subsection{Changes to the state transitions}
+
+We need an extra equation in the definition of @dispatch@, to call
+@indStep@ if we find an indirection:
+
+3> step state
+3>  = dispatch (hLookup heap (hd stack))
+3>    where
+3>    (stack, dump, heap, globals, stats) = state
+3>    dispatch (NInd a)                  = indStep state a
+3>    dispatch (NAp a1 a2)               = apStep  state a1 a2
+3>    dispatch (NSupercomb sc args body) = scStep  state sc args body
+
+In the case of an indirection, we remove the address of the indirection from
+the stack and replace it with the address of the node to which it points.
+
+M3-> indStep :: tiState -> addr -> tiState
+GH3-> indStep :: TiState -> Addr -> TiState
+3-> indStep (a : stack, dump, heap, globals, stats) a'
+3->  = (a' : stack, dump, heap, globals, stats)
+
+\subsection{New printing equations}
+
+We need a new case in @showNode@ for indirections:
+
+3> showNode (NAp a1 a2) = iConcat [ iStr "NAp ", showAddr a1, 
+3>				    iStr " ",    showAddr a2
+3>			  ]
+3> showNode (NSupercomb name args body) = iStr ("NSupercomb " ++ name)
+M3> showNode (NNum n) = (iStr "NNum ") $iAppend (iNum n)
+GH3> showNode (NNum n) = (iStr "NNum ") `iAppend` (iNum n)
+M3> showNode (NInd a) = (iStr "NInd ") $iAppend (showAddr a)
+GH3> showNode (NInd a) = (iStr "NInd ") `iAppend` (showAddr a)
+
+
+\section{Mark 4: Arithmetic}
+
+We present the completed code for this section.
+
+\subsection{New state transitions}
+
+4-> tiFinal ([sole_addr], [], heap, globals, stats)
+4->  = isDataNode (hLookup heap sole_addr)
+4->
+4-> tiFinal ([], dump, heap, globals, stats) = error "Empty stack!"
+4-> tiFinal state = False
+
+
+4> step state
+4>  = dispatch (hLookup heap (hd stack))
+4>    where
+4>    (stack, dump, heap, globals, stats) = state
+4>    dispatch (NNum n) 	         = numStep  state n
+4>    dispatch (NInd a) 	         = indStep  state a
+4>    dispatch (NAp a1 a2) 	         = apStep   state a1 a2
+4>    dispatch (NSupercomb sc args body) = scStep   state sc args body
+4>    dispatch (NPrim name prim)         = primStep state prim
+
+M4-> apStep :: tiState -> addr -> addr -> tiState
+GH4-> apStep :: TiState -> Addr -> Addr -> TiState
+4-> apStep (stack, dump, heap, globals, stats) a1 a2
+4->  = ap_dispatch (hLookup heap a2)
+4->    where
+4->
+4->    ap_dispatch (NInd a3) = (stack, dump, heap', globals, stats)
+4->                            where heap' = hUpdate heap ap_node (NAp a1 a3)
+4->                                  ap_node = hd stack
+4->
+4->    ap_dispatch node = (a1 : stack, dump, heap, globals, stats)
+
+4-> numStep (stack, stack':dump, heap, globals, stats) n
+4->  = (stack', dump, heap, globals, stats)
+
+\subsection{Definition for arithmetic primitives}
+
+M4-> primNeg :: tiState -> tiState
+GH4-> primNeg :: TiState -> TiState
+4-> primNeg (stack, dump, heap, globals, stats)
+M4->  = error "primNeg: wrong number of args",		   #args ~= 1
+GH4->  | length args /= 1 = error "primNeg: wrong number of args"
+M4->  = ([arg_addr], new_stack:dump, heap, globals, stats),  ~isDataNode arg_node
+GH4->  | not (isDataNode arg_node) = ([arg_addr], new_stack:dump, heap, globals, stats)
+M4->  = (new_stack, dump, new_heap, globals, stats),	   otherwise
+GH4->  | otherwise = (new_stack, dump, new_heap, globals, stats)
+4->    where
+M4->    args = getArgs heap stack		|| Should be just one arg
+GH4->    args = getargs heap stack		-- Should be just one arg
+4->    [arg_addr] = args
+M4->    arg_node = hLookup heap arg_addr        || Get the arg node itself
+GH4->    arg_node = hLookup heap arg_addr        -- Get the arg node itself
+M4->    NNum arg_value = arg_node		|| Extract the value
+GH4->    NNum arg_value = arg_node		-- Extract the value
+M4->    new_stack = drop 1 stack                || Leaves root of redex on top
+GH4->    new_stack = drop 1 stack                -- Leaves root of redex on top
+4->    root_of_redex = hd new_stack
+4->    new_heap = hUpdate heap root_of_redex (NNum (-arg_value))
+
+4> primArith (stack, dump, heap, globals, stats) op
+M4>  = error "primArith: wrong number of args",		   #args ~= 2
+GH4>  | length args /= 2 = error "primArith: wrong number of args"
+M4>  = ([arg1_addr], new_stack:dump, heap, globals, stats),  ~isDataNode arg1_node
+GH4>  | not (isDataNode arg1_node) = ([arg1_addr], new_stack:dump, heap, globals, stats)
+M4>  = ([arg2_addr], new_stack:dump, heap, globals, stats),  ~isDataNode arg2_node
+GH4>  | not (isDataNode arg2_node) = ([arg2_addr], new_stack:dump, heap, globals, stats)
+M4>  = (new_stack, dump, new_heap, globals, stats),	   otherwise
+GH4>  | otherwise = (new_stack, dump, new_heap, globals, stats)
+4>    where
+M4>    args = getArgs heap stack			|| Should be just two args
+GH4>    args = getargs heap stack			-- Should be just two args
+4>    [arg1_addr,arg2_addr] = args
+4>    arg1_node = hLookup heap arg1_addr
+4>    arg2_node = hLookup heap arg2_addr
+4>    NNum arg1_value = arg1_node
+4>    NNum arg2_value = arg2_node
+4>    new_stack = drop 2 stack
+4>    root_of_redex = hd new_stack
+4>    new_heap = hUpdate heap root_of_redex (NNum (op arg1_value arg2_value))
+
+\subsection{Printing}
+
+4> showNode (NAp a1 a2) = iConcat [ iStr "NAp ", showAddr a1, 
+4>				    iStr " ",    showAddr a2
+4>			   ]
+4> showNode (NSupercomb name args body) = iStr ("NSupercomb " ++ name)
+M4> showNode (NNum n) = (iStr "NNum ") $iAppend (iNum n)
+GH4> showNode (NNum n) = (iStr "NNum ") `iAppend` (iNum n)
+M4> showNode (NInd a) = (iStr "NInd ") $iAppend (showAddr a)
+GH4> showNode (NInd a) = (iStr "NInd ") `iAppend` (showAddr a)
+4> showNode (NPrim name prim) = iStr ("NPrim " ++  name)
+
+4-> showState (stack, dump, heap, globals, stats)
+4->  = iConcat [ showStack heap stack, iNewline, showDump dump, iNewline ]
+
+M4-> showDump dump = iConcat [ iStr "Dump depth ", iNum (#dump) ]
+GH4-> showDump dump = iConcat [ iStr "Dump depth ", iNum (length dump) ]
+
+\section{Mark 5: Structured data}
+
+\subsection{Conditionals}
+
+The Core-language definitions for the boolean operators are:
+\begin{verbatim}
+	not x = if x False True
+	or x y = if x True y
+	xor x y = if x (not y) y
+\end{verbatim}
+
+The extra @preludeDefs@ are:
+
+5> extraPreludeDefs 
+5>  = [	
+5>	("False",	[], EConstr 1 0),
+5>	("True",	[], EConstr 2 0),
+5>
+5>	("not",		["x"],     EAp (EAp (EAp (EVar "if") (EVar "x"))
+5>					     (EVar "False"))
+5>					(EVar "True")),
+5>	("and",		["x","y"], EAp (EAp (EAp (EVar "if") (EVar "x"))
+5>					     (EVar "y"))
+5>					(EVar "False")),
+5>	("or",		["x","y"], EAp (EAp (EAp (EVar "if") (EVar "x"))
+5>					     (EVar "True"))
+5>					(EVar "y")),
+5>	("xor",		["x","y"], EAp (EAp (EAp (EVar "if") (EVar "x"))
+5>					     (EAp (EVar "not") (EVar "y")))
+5>					(EVar "y")),
+5>
+5>      ("MkPair",	[], EConstr 1 2),
+5>      ("fst",		["p"], EAp (EAp (EVar "casePair") (EVar "p"))
+5>				    (EVar "K")),
+5>      ("snd",		["p"], EAp (EAp (EVar "casePair") (EVar "p"))
+5>				    (EVar "K1")),
+5>
+5>	("LCons",	[], EConstr 2 2),
+5>	("Nil",		[], EConstr 1 0),
+5>	("head",	["xs"], EAp (EAp (EAp (EVar "caseList") (EVar "xs"))
+5>					  (EVar "abort"))
+5>				     (EVar "K")),
+5>	("tail",	["xs"], EAp (EAp (EAp (EVar "caseList") (EVar "xs"))
+5>					  (EVar "abort"))
+5>				     (EVar "K1"))
+5>    ]
+
+Next comes new definitions of @primitive@ and @primitives@:
+
+M5>  primitive ::= Negate 
+GH5> data Primitive = Negate 
+5>		  | Add | Subtract 
+5>		  | Multiply | Divide
+5>		  | Greater | GreaterEq 
+5>		  | Less | LessEq
+5>		  | Eq | NotEq
+M5>		  | PrimConstr num num		|| Tag and arity
+GH5>		  | PrimConstr Int Int		-- Tag and arity
+5>		  | If
+5>		  | PrimCasePair
+5>		  | PrimCaseList
+5>		  | Abort
+
+M5> primitives :: assoc name primitive
+GH5> primitives :: ASSOC Name Primitive
+5> primitives = [  ("negate", Negate), 
+5>		  ("+", Add),      	("-", Subtract), 
+5>		  ("*", Multiply), 	("/", Divide),
+5>		  (">", Greater),	(">=", GreaterEq),
+5>		  ("<", Less),		("<=", LessEq),
+5>		  ("==", Eq),		("~=", NotEq),
+5>		  ("if", If),		("casePair", PrimCasePair),
+5>		  ("caseList", PrimCaseList),
+5>		  ("abort", Abort)
+5>	        ]
+
+The new definition of @instantiateConstr@:
+
+5> instantiateConstr tag arity heap env
+5>  = hAlloc heap (NPrim "Cons" (PrimConstr tag arity))
+5> instantiateAndUpdateConstr tag arity upd_addr heap env
+5>  = hUpdate heap upd_addr (NPrim "Cons" (PrimConstr tag arity))
+
+The new definition of @isDataNode@ identifies @NData@ as well as @NNum@:
+
+M5> isDataNode :: node -> bool
+GH5> isDataNode :: Node -> Bool
+5> isDataNode (NNum n)    = True
+5> isDataNode (NData t c) = True
+5> isDataNode node        = False
+
+@dispatch@ gets an extra case:
+
+5> step state
+5>  = dispatch (hLookup heap (hd stack))
+5>    where
+5>    (stack, dump, heap, globals, stats) = state
+5>    dispatch (NNum n)                  = numStep  state n
+5>    dispatch (NInd a)                  = indStep  state a
+5>    dispatch (NAp a1 a2)               = apStep   state a1 a2
+5>    dispatch (NSupercomb sc args body) = scStep   state sc args body
+5>    dispatch (NPrim name prim)         = primStep state prim
+5>    dispatch (NData tag compts)        = dataStep state tag compts
+
+5> dataStep (stack, stack':dump, heap, globals, stats) tag compts
+5>  = (stack', dump, heap, globals, stats)
+
+@primStep@ is extended to handle the new primitives:
+
+5> primStep state Negate   = primNeg state
+5> primStep state Add      = primArith state (+)
+5> primStep state Subtract = primArith state (-)
+5> primStep state Multiply = primArith state (*)
+5> primStep state Divide   = primArith state (div)
+5>
+5> primStep state Greater    = primComp state (>)
+5> primStep state GreaterEq  = primComp state (>=)
+5> primStep state Less       = primComp state (<)
+5> primStep state LessEq     = primComp state (<=)
+M5> primStep state Eq         = primComp state (=)
+GH5> primStep state Eq         = primComp state (==)
+M5> primStep state NotEq      = primComp state (~=)
+GH5> primStep state NotEq      = primComp state (/=)
+5> primStep state (PrimConstr tag arity) = primConstr state tag arity
+5>
+5> primStep state If	       = primIf state
+5> primStep state PrimCasePair = primCasePair state
+5> primStep state PrimCaseList = primCaseList state
+5> 
+5> primStep state Abort = error "Program abort!"
+
+5> primArith state op = primDyadic state op' 
+5>			where op' (NNum n) (NNum m) = NNum (op n m)
+5> primComp state op  = primDyadic state op' 
+M5>		        where op' (NNum n) (NNum m) = NData 2 [], op n m
+M5>					            = NData 1 [], otherwise
+GH5>                     where op' (NNum n) (NNum m) | op n m = NData 2 []
+GH5>                                                 | otherwise = NData 1 []
+
+5> primDyadic (stack, dump, heap, globals, stats) op
+M5>  = error "primArith: wrong number of args",		   #args ~= 2
+M5>  = ([arg1_addr], new_stack:dump, heap, globals, stats),  ~isDataNode arg1_node
+M5>  = ([arg2_addr], new_stack:dump, heap, globals, stats),  ~isDataNode arg2_node
+M5>  = (new_stack, dump, new_heap, globals, stats),	   otherwise
+GH5>  | length args /= 2 = error "primArith: wrong number of args"
+GH5>  | not (isDataNode arg1_node) = ([arg1_addr], new_stack:dump, heap, globals, stats)
+GH5>  | not (isDataNode arg2_node) = ([arg2_addr], new_stack:dump, heap, globals, stats)
+GH5>  | otherwise = (new_stack, dump, new_heap, globals, stats)
+5>    where
+M5>    args = getArgs heap stack		|| Should be just two args
+GH5>    args = getargs heap stack		-- Should be just two args
+5>    [arg1_addr,arg2_addr] = args
+5>    arg1_node = hLookup heap arg1_addr
+5>    arg2_node = hLookup heap arg2_addr
+5>    new_stack = drop 2 stack
+5>    root_of_redex = hd new_stack
+5>    new_heap = hUpdate heap root_of_redex (op arg1_node arg2_node)
+
+5> primIf (stack, dump, heap, globals, stats)
+M5>  = error "primIf: wrong number of args",		   #args < 3
+M5>  = ([arg1_addr], new_stack:dump, heap, globals, stats),  ~isDataNode arg1_node
+M5>  = (new_stack, dump, new_heap, globals, stats),	   otherwise
+GH5>  | length args < 3 = error "primIf: wrong number of args"
+GH5>  | not (isDataNode arg1_node) = ([arg1_addr], new_stack:dump, heap, globals, stats)
+GH5>  | otherwise = (new_stack, dump, new_heap, globals, stats)
+5>    where
+M5>    args = getArgs heap stack
+GH5>    args = getargs heap stack
+5>    (arg1_addr:arg2_addr:arg3_addr:rest_args) = args
+5>    arg1_node = hLookup heap arg1_addr
+5>    new_stack = drop 3 stack
+5>    root_of_redex = hd new_stack
+5>    NData tag [] = arg1_node
+M5>    result_addr = arg2_addr,	tag = 2
+M5>                = arg3_addr,   otherwise
+GH5>    result_addr | tag == 2  = arg2_addr
+GH5>                | otherwise = arg3_addr
+5>    new_heap = hUpdate heap root_of_redex (NInd result_addr)
+
+5> primCasePair (stack, dump, heap, globals, stats)
+M5>  = error "primCasePair: wrong number of args",	   #args < 2
+M5>  = ([arg1_addr], new_stack:dump, heap, globals, stats),  ~isDataNode arg1_node
+M5>  = (new_stack, dump, new_heap, globals, stats),	   otherwise
+GH5>  | length args < 2 = error "primCasePair: wrong number of args"
+GH5>  | not (isDataNode arg1_node) = ([arg1_addr], new_stack:dump, heap, globals, stats)
+GH5>  | otherwise = (new_stack, dump, new_heap, globals, stats)
+5>    where
+M5>    args = getArgs heap stack
+GH5>    args = getargs heap stack
+5>    (arg1_addr:arg2_addr:rest_args) = args
+5>    arg1_node = hLookup heap arg1_addr
+5>    new_stack = drop 2 stack
+5>    root_of_redex = hd new_stack
+5>    NData tag [fst,snd] = arg1_node
+5>    new_heap = hUpdate heap1 root_of_redex (NAp temp_addr snd)
+5>               where (heap1, temp_addr) = hAlloc heap (NAp arg2_addr fst)
+
+5> primCaseList (stack, dump, heap, globals, stats)
+M5>  = error "primCaseList: wrong number of args",	   #args < 3
+M5>  = ([arg1_addr], new_stack:dump, heap, globals, stats),  ~isDataNode arg1_node
+M5>  = (new_stack, dump, new_heap, globals, stats),	   otherwise
+GH5>  | length args < 3 = error "primCaseList: wrong number of args"
+GH5>  | not (isDataNode arg1_node) = ([arg1_addr], new_stack:dump, heap, globals, stats)
+GH5>  | otherwise = (new_stack, dump, new_heap, globals, stats)
+5>    where
+M5>    args = getArgs heap stack
+GH5>    args = getargs heap stack
+5>    (arg1_addr:arg2_addr:arg3_addr:rest_args) = args
+5>    arg1_node = hLookup heap arg1_addr
+5>    new_stack = drop 3 stack
+5>    root_of_redex = hd new_stack
+5>    NData tag compts = arg1_node
+5>    [head,tail] = compts
+M5>    new_heap = hUpdate heap root_of_redex (NInd arg2_addr),	  tag = 1
+M5>             = hUpdate heap1 root_of_redex (NAp temp_addr tail), otherwise
+GH5>    new_heap | tag == 1 = hUpdate heap root_of_redex (NInd arg2_addr)
+GH5>             | otherwise = hUpdate heap1 root_of_redex (NAp temp_addr tail)
+5>	         where (heap1, temp_addr) = hAlloc heap (NAp arg3_addr head)
+
+5> primConstr (stack, dump, heap, globals, stats) tag arity
+M5>  = error "primConstr: wrong number of args",		   #args < arity
+M5>  = (new_stack, dump, new_heap, globals, stats),	   otherwise
+GH5>  | length args < arity = error "primConstr: wrong number of args"
+GH5>  | otherwise = (new_stack, dump, new_heap, globals, stats)
+5>    where
+M5>    args = getArgs heap stack
+GH5>    args = getargs heap stack
+5>    new_stack = drop arity stack
+5>    root_of_redex = hd new_stack
+5>    new_heap = hUpdate heap root_of_redex (NData tag args)
+
+
+Finally, @showNode@ is extended to display @NData@ nodes:
+
+5> showNode (NAp a1 a2) = iConcat [ iStr "NAp ", showAddr a1, 
+5>				    iStr " ",    showAddr a2
+5>			   ]
+5> showNode (NSupercomb name args body) = iStr ("NSupercomb " ++ name)
+M5> showNode (NNum n) = (iStr "NNum ") $iAppend (iNum n)
+GH5> showNode (NNum n) = (iStr "NNum ") `iAppend` (iNum n)
+M5> showNode (NInd a) = (iStr "NInd ") $iAppend (showAddr a)
+GH5> showNode (NInd a) = (iStr "NInd ") `iAppend` (showAddr a)
+5> showNode (NPrim name prim) = iStr ("NPrim " ++  name)
+5> showNode (NData tag compts) 
+5>	= iConcat [ iStr "NData ", iNum tag, iStr " [",
+5>		    iInterleave (iStr ",") (map showAddr compts),
+5>		    iStr "]"
+5>	  ]
+

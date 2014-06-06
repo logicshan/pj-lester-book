@@ -1,0 +1,13 @@
+p a b = letrec
+              f = \a b. g a (b + 1);
+              g = \x y. f x (y + b);
+              h = \a n. m (n + 1) (f a n);
+              p = (a + b) - 20;
+              m = \p q.  letrec 
+                         d = \pp. pp + q + p;
+                         c = \q. (q * g + a);
+                         g = a + 6
+                      in  d (1 + a) + c ( a - b) * p
+             in  h p a;
+main = p 5 6
+

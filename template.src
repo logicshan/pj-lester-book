@@ -1,0 +1,2758 @@
+% $Date: 91/09/10 14:48:43 $
+% $Revision: 1.9 $
+% (c) 1991 Simon Peyton Jones & David Lester.
+
+H> module Template where
+H> import Language
+H> import Utils
+
+\chapter{Template instantiation}
+\label{sect:template}
+
+This chapter introduces the simplest possible implementation of
+a functional language: a graph reducer based
+on \stressD{template instantiation}.
+
+The complete source code for an initial version (Mark 1) is given, followed
+by a series of improvements and variations on the basic design.
+We begin with a review of graph reduction and template instantiation.
+
+\section{A review of template instantiation}
+
+We begin with a brief overview of template instantiation.
+This material is covered in more detail in
+Chapters 11 and 12 of \cite{PJBook}.
+
+We recall the following key facts:
+\begin{itemize}
+\item
+A functional program is `executed' by {\em evaluating an expression}.
+\item
+The expression is represented by a {\em graph}\indexD{graph}.
+\item
+Evaluation takes place by carrying out a sequence of
+\stressD{reductions}.
+\item
+A reduction replaces (or {\em updates\/}\index{updates})
+a \stressD{reducible expression}
+ in the graph
+by its reduced form. The term `reducible expression' is often
+abbreviated to `redex'\index{redex}.
+\item
+Evaluation is complete when there are no more redexes; we say that the
+expression is in \stressD{normal form}.
+\item
+At any time there may be more than one redex in the expression being
+evaluated, so there is a choice about which one to reduce next.
+Fortunately, whatever reduction sequence we choose, we will always get the
+same answer (that is, normal form).  There is one caveat: some reduction
+sequences may fail to terminate.
+\index{termination}
+\item
+However, if
+any choice of redexes makes evaluation terminate, then the policy of
+always selecting the outermost redex will also do so.
+This choice of reduction order is called
+\stressD{normal order reduction}, and it is the one we will always use.
+\end{itemize}
+
+\begin{together}
+Thus the process of evaluation can be described as follows:
+\begin{verbatim}
+	until there are no more redexes
+		select the outermost redex
+		reduce it
+		update the (root of the) redex with the result
+	end
+\end{verbatim}
+\end{together}
+
+\subsection{An example}
+
+As an example, consider the following Core-language program:
+\begin{verbatim}
+	square x = x * x ;
+	main = square (square 3)
+\end{verbatim}
+The program consists of a set of definitions, called {\em supercombinators\/};
+@square@ and @main@ are both supercombinators\indexD{supercombinator}.
+By convention, the expression to be evaluated is the supercombinator @main@.
+Hence, to begin with the expression to be evaluated is represented by the
+following rather trivial tree
+(remember that a tree is just a special sort of graph):
+\begin{verbatim}
+	main
+\end{verbatim}
+Now, since @main@ has no arguments, it itself is a redex, so we replace it
+by its body:
+\begin{verbatim}
+	main            reduces to      @
+				       / \
+				 square   @
+					 / \
+				   square   3
+\end{verbatim}
+Applications are represented by {\tt @@} signs in these pictures and all
+subsequent ones.
+
+Now the outermost redex is the outer application of @square@.
+To reduce a function application we replace the redex with
+an instance of the body of the function, substituting a pointer to the
+argument for each occurrence of the formal parameter, thus:
+\begin{verbatim}
+		@!      reduces to      @!
+	       / \                     / \
+	 square   @                   @   \
+		 / \                 / \___@
+	   square   3               *     / \
+				    square   3
+\end{verbatim}
+The root of the redex, which is overwritten with the result, is marked with
+a @!@.
+Notice that the inner @square 3@ redex has become shared, so that
+the tree has become a graph.
+
+In the definition of @square@ the expression @x*x@ (in which the @*@ is
+written infix) is just short for @((* x) x)@, the application of @*@ to
+two arguments. We use {\em currying\/} to write functions of several
+arguments in terms of one-argument applications: @*@ is a function
+which, when applied to an argument @p@, gives a function which, when
+applied to another argument @q@, returns the product of @p@ and @q@.
+
+Now the only redex is the inner application of @square@ to @3@.  The
+application of @*@ is not reducible because @*@ requires its arguments to
+be evaluated.
+The inner application is reduced like this:
+\begin{verbatim}
+		@       reduces to      @
+	       / \                     / \
+	      @   \                   @   \
+	     / \___@!                / \___@
+	    *     / \               *     / \
+	    square   3                   @   \
+					/ \___3
+				       *
+\end{verbatim}
+There is still only one redex, the inner multiplication.  We replace
+the redex with the result of the multiplication, @9@:
+\begin{verbatim}
+		@       reduces to      @
+	       / \                     / \
+	      @   \                   @   \
+	     / \___@!                / \___9
+	    *     / \               *
+		 @   \
+		/ \___3
+	       *
+\end{verbatim}
+
+Notice that by physically updating the root of the redex with the
+result, both arguments of the outer multiplication `see' the result
+of the inner multiplication.
+The final reduction is simple:
+\begin{verbatim}
+		@       reduces to      81
+	       / \
+	      @   \
+	     / \___9
+	    *
+\end{verbatim}
+
+\subsection{The three steps}
+
+As we saw earlier, graph reduction consists of repeating the following
+three steps until a normal form is reached:
+\begin{enumerate}
+\item
+Find the next redex.
+\item
+Reduce it.
+\item
+Update the (root of the) redex with the result.
+\end{enumerate}
+As can be seen from the example in the previous section,
+there are two sorts of redex, which are
+reduced in different ways:
+\begin{description}
+\item[Supercombinators.]
+If the outermost function application is a supercombinator application,
+then it is certainly also a redex, and it can be reduced as described
+below (Section~\ref{sect:templ:supercomb-review}).
+\item[Built-in primitives.]
+If the outermost function application is the application of a built-in
+primitive\index{primitives}%
+, then the application may or may not be a redex, depending on
+whether the arguments are evaluated.
+If not, then the arguments must be evaluated.
+This is done using exactly the same process: repeatedly find the outermost
+redex of the argument and reduce it.
+Once this is done, we can return to the reduction of the outer application.
+\end{description}
+
+\subsection{Unwinding the spine to find the next redex}
+
+The first step of the reduction cycle is to find the site of the next
+reduction to be performed;
+that is, the outermost reducible function application.
+It is easy to find the outermost function application (though it may
+not be reducible) as follows:
+\begin{enumerate}
+\item
+Follow the
+left branch of the application nodes, starting at the root, until you
+get to a supercombinator or built-in primitive.
+This left-branching chain of application nodes is called the {\em spine\/}
+of the expression, and this process is called {\em unwinding\/}\index{unwind}
+the spine.
+Typically a {\em stack\/}\index{stack} is used to remember
+the addresses of the nodes encountered on the way down.
+\item
+Now, check how many arguments the supercombinator or primitive
+takes and go back up
+that number of application nodes; you have now found the root of the
+outermost function application.
+\end{enumerate}
+For example, in the expression @(f E1 E2 E3)@, where @f@ takes two arguments,
+say, the outermost function application is @(f E1 E2)@.  The expression and
+stack would look like this:
+\begin{verbatim}
+	 Stack
+      -----------
+	|  ---|-------> @
+	-------        / \
+	|  ---|-----> @!  E3
+	-------      / \
+	|  ---|---> @   E2
+	-------    / \
+	|  ---|-> f   E1
+	-------
+\end{verbatim}
+The (root of the) outermost function application is marked with a @!@.
+
+If the result of an evaluation could be a partial
+application\index{partial applications}, as would be the case if @f@ took
+four arguments instead of two, then step 2 above needs to be preceded
+by a check there are enough application nodes in the spine.  If not,
+the expression has reached {\em weak head normal form\/} (WHNF).
+\indexD{weak head normal form}
+The
+sub-expressions @E1@, @E2@ and @E3@ might still contain redexes, but
+most evaluators will stop when they reach WHNF rather than trying to
+reduce the sub-expressions also.  If the program has been type-checked,
+and the result is guaranteed to be a number, say, or a list, then this
+underflow check\index{stack underflow check}
+can be omitted.
+
+Notice that we have only found the root of the outermost {\em function
+application}.  It may or may not be a {\em redex\/} as well.  If the function
+is a supercombinator, then it will certainly be a redex, but if it is
+a primitive, such as @+@, then it depends on whether its arguments are
+evaluated.  If they are, we have found the outermost redex.  If not, we have
+more work to do.
+
+If a primitive\index{primitives}
+requires the value of a currently unevaluated argument,
+we must
+evaluate the argument before the primitive reduction can proceed.
+To do this, we must put the current stack on one
+side, and begin with a new stack to reduce the argument, in the same
+way as before.  This was the situation in the example of the previous section
+when we reached the stage
+\begin{verbatim}
+		@
+	       / \
+	      @   \
+	     / \___@
+	    *     / \
+	    square   3
+\end{verbatim}
+
+We need to evaluate the argument @(square 3)@ on a new
+stack.  During this evaluation, we might again encounter a primitive
+with an unevaluated argument, so we would need to start a new evaluation
+again.  We need to keep track of all the `old' stacks, so that we come
+back to them in the right order.  This is conveniently done by keeping
+a stack of stacks, called the {\em dump}.  When we need to evaluate an
+argument, we push the current stack onto the dump\index{dump}%
+; when we have finished
+an evaluation we pop the old stack off the dump.
+
+Of course, in a real implementation we would not copy whole stacks!
+Since the `new' stack will be finished with before the `old' one is again
+required, the `new' one could be built
+physically on top of the `old' one.
+The dump stack would then just keep track of where the boundary between
+`new' and `old' was.  Conceptually, though, the dump is a stack of stacks,
+and we will model it in this way.
+
+\subsection{Supercombinator redexes}
+\label{sect:templ:supercomb-review}
+
+A supercombinator redex is reduced by substituting the arguments into
+its body.  More precisely:
+\begin{important}
+{\em Supercombinator reduction}.  A supercombinator redex is reduced
+by replacing the
+redex with an instance of the
+supercombinator body, substituting pointers to the actual arguments for
+corresponding occurrences of the formal parameters.
+Notice that the arguments are
+not copied; rather, by the device of using pointers
+to them, they are shared.\index{instantiation}
+\end{important}
+
+A supercombinator body may contain @let@ and @letrec@ expressions.
+For example:
+\begin{verbatim}
+	f x = let y = x*x
+	      in y+y
+\end{verbatim}
+@let@ and @letrec@ expressions are treated as {\em textual descriptions of
+a graph}.  Here, for example, is a possible use of the definition of @f@:
+\begin{verbatim}
+	@       reduces to      @
+       / \                     / \
+      f   3                   @   \
+			     / \___@y
+			    +     / \
+				 @   \
+				/ \___3
+			       *
+\end{verbatim}
+The @let@ expression defines a sub-expression @x*x@, which is named @y@.
+The body of the @let@ expression, @y+y@, uses pointers to the sub-expression
+in place of @y@.  Thus ordinary expressions describe trees; @let@ expressions
+describe acyclic graphs; and @letrec@ expressions describe cyclic
+graphs.
+
+\subsection{Updates}
+\label{sect:templ:update-review}
+
+After performing a reduction, we must update the root of the redex with
+the result, so that if the redex is shared (as it was in the example
+@(square (square 3))@) the reduction is only done once.
+This updating is the essence of {\em lazy
+evaluation}.
+A redex may not be evaluated at all but, if it is evaluated, the
+update ensures that the cost of doing so is incurred at most once.
+\index{updates}
+
+Omitting the updates does not cause any errors; it will just mean that
+some expressions may be evaluated more than once, which is inefficient.
+
+There is one case that requires a little care when performing updates.
+Consider the program
+\begin{verbatim}
+	id x = x
+	f p = (id p) * p
+	main = f (sqrt 4)
+\end{verbatim}
+After the @f@ reduction has taken place, the graph looks like this:
+\begin{verbatim}
+		@
+	       / \
+	      @   \
+	     / \   \
+	    *   @   \
+	       / \___@
+	     id     / \
+		sqrt   4
+\end{verbatim}
+We assume @sqrt@ is a built-in primitive for taking square roots.
+Now, suppose that the next redex selected is the first argument of the @*@,
+namely the application of @id@.
+(It might equally well be the second argument of @*@, since neither argument
+is in normal form, but we will suppose it is the first.)
+What should we overwrite the root of the redex with after performing the
+@id@ reduction?  {\em We should certainly not overwrite it with a
+copy of the @(sqrt 4)@ application node,
+because then @(sqrt 4)@ would be evaluated twice!}
+
+The easiest way out of this dilemma is to add a new sort of graph node,
+an {\em indirection node}\index{indirections},
+which will be depicted as a @#@ sign.  An
+indirection node can be used to update the root of a redex to point to
+the result of the reduction:
+\begin{verbatim}
+		@       reduces to      @
+	       / \                     / \
+	      @   \                   @   \
+	     / \   \                 / \   \
+	    *   @   \               *   #   \
+	       / \___@                   \___@
+	     id     / \                     / \
+		sqrt   4                sqrt   4
+\end{verbatim}
+Section 12.4 of \cite{PJBook} contains further discussion of the
+issues involved in updates.
+
+\subsection{Constant applicative forms\advanced}
+\label{sect:caf}
+
+Some supercombinators have no arguments; they are called {\em constant
+applicative forms}, or CAFs.
+\index{CAF}
+For example, @fac20@ is a CAF:
+\begin{verbatim}
+	fac20 = factorial 20
+\end{verbatim}
+The interesting thing about CAFs is that {\em the supercombinator itself
+is a redex}.  We do not want to instantiate a new copy of @factorial 20@
+whenever @fac20@ is called, because that would mean repeating the
+computation of @factorial 20@.  Rather, the supercombinator @fac20@ is
+the root of the @fac20@-reduction, and should be overwritten with the
+result of instantiating its body.
+
+The practical consequence is that supercombinators should be represented
+by graph nodes, in order that they can be updated in the usual way.
+We will see this happening in practice in each of our implementations.
+
+This concludes our review of graph reduction.
+
+\section{State transition systems}
+
+We now turn our attention to implementing graph reduction.
+We will describe each of our implementations using a
+{\em state transition system}.
+In this section we introduce state transition systems.
+
+A state transition system
+\index{state transition system} is a notation for describing the
+behaviour of a sequential machine.
+At any time, the machine is in some {\em state}, beginning with a specified
+{\em initial state}.
+If the machine's state {\em matches\/} one of the
+{\em state transition rules}, the rule {\em fires\/} and specifies a
+new state for the machine.
+When no state transition rule matches, execution halts.
+If more than one rule matches, then one is chosen arbitrarily to fire; the
+machine is then {\em non-deterministic}.  All our machines will be
+deterministic.
+
+Here is a simple example of a state transition system used to
+specify a (rather inefficient) multiplication machine.  The state is a
+quadruple $(n,m,d,t)$.  The numbers to be multiplied are $n$ and $m$, and
+the running total is $t$, and
+the machine is initialised to the state $(n,m,0,0)$.
+
+The operation of the machine is specified by two transition rules.
+The $d$ component is
+repeatedly decremented towards zero while simultaneously incrementing $t$,
+as specified by the first rule:
+\begin{flushleft}
+\qquad $\begin{array}{|lllll|}
+\hline
+		& n & m & d & t         \\
+\Longrightarrow & n & m & d-1 & t+1     \\
+		& \multicolumn{4}{l|}{\mbox{where}~d>0}  \\
+\hline
+\end{array}$
+\end{flushleft}
+We always write transition rules with each component of the new state
+directly underneath the same component of the old state, so that it is
+easy to see which components have changed.
+
+When $d$ reaches zero it is initialised again to $n$, and $m$ is decremented,
+until $m$ reaches zero.  This is specified by the second rule:
+\begin{flushleft}
+\qquad $\begin{array}{|lllll|}
+\hline
+		& n & m & 0 & t         \\
+\Longrightarrow & n & m-1 & n & t       \\
+		& \multicolumn{4}{l|}{\mbox{where}~m>0} \\
+\hline
+\end{array}$
+\end{flushleft}
+The machine terminates when no rule applies.  At this point it will be
+in a state $(n,0,0,t)$, where $t$ is the product of $n$ and $m$ from the
+initial state.
+
+\begin{exercise}
+Run the machine by hand
+starting with initial state $(2,3,0,0)$, specifying
+which rule fires at each step.  Verify that the final state is $(2,0,0,6)$.
+\end{exercise}
+
+\begin{exercise}
+An invariant\index{invariant} of a sequence of states is a predicate
+which is true of all of the states.  Find an invariant which expresses
+the relationship between the initial value of $n$ and $m$ (call them
+$N$ and $M$), and the current values of $m$, $d$ and $t$.  Hence {\em
+prove\/} the conjecture that the machine performs multiplication.  To do
+the proof you need to show that
+\begin{enumerate}
+\item
+The invariant is true for the initial state.
+\item
+If the invariant is true for a particular state, then it is
+true for its successor state.
+\item
+Given the invariant and the termination condition ($m=d=0$),
+then $t = N*M$.
+\item
+The machine terminates.
+\end{enumerate}
+\end{exercise}
+
+State transition systems are convenient for our purposes, because:
+\begin{itemize}
+\item
+They are sufficiently {\em abstract\/} that we do not get tangled up in very
+low-level details.
+\item
+They are sufficiently {\em concrete\/} that we can be sure we are
+not `cheating' by hiding a lot of complexity in the rules.
+\item
+We can transliterate a state transition system directly into Miranda
+to give an executable implementation of the system.
+\end{itemize}
+
+To illustrate the last point, we will transliterate the multiplication
+machine into Miranda.  We begin by giving a type synonym to define the
+type of a state in this machine:
+
+M1> multState == (num, num, num, num)     || (n, m, d, t)
+GH1> type MultState = (Int, Int, Int, Int)     -- (n, m, d, t)
+
+Next, the function @evalMult@ takes a state and
+returns the list consisting of that state followed by all
+the states which follow it:
+
+M1> evalMult :: multState -> [multState]
+M1> evalMult state = [state],                             multFinal state
+M1>                = state : evalMult (stepMult state),   otherwise
+GH1> evalMult :: MultState -> [MultState]
+GH1> evalMult state = if multFinal state 
+GH1>                    then [state]
+GH1>                    else state : evalMult (stepMult state)
+
+The function @stepMult@ takes a non-final state and returns the next state.
+There is one equation for @stepMult@ for each transition rule:
+
+M1> stepMult (n, m, d, t) = (n, m,   d-1, t+1),   d>0
+M1> stepMult (n, m, d, t) = (n, m-1, n,   t),     d=0
+GH1> stepMult (n, m, d, t) | d > 0  = (n, m,   d-1, t+1)
+GH1> stepMult (n, m, d, t) | d == 0 = (n, m-1, n,   t)
+
+The function @multFinal@ takes a state and
+tests whether the state is a final state:
+
+M1> multFinal :: multState -> bool
+GH1> multFinal :: MultState -> Bool
+
+\begin{exercise}
+Define the function @multFinal@, and run the resulting machine on
+the initial state $(2,3,0,0)$, checking that the last state of the result
+list is $(2,0,0,6)$.  You may find the standard function @layn@ is useful
+to help lay out the results more legibly.
+\end{exercise}
+
+\section{Mark 1: A minimal template instantiation graph reducer}
+\index{template instantiation machine!Mark 1}
+
+We are now ready to begin the definition of a rather simple graph reducer.
+Even though it is simple, it contains many of the parts
+that more sophisticated graph reducers have, so it takes a few pages
+to explain.
+
+\subsection{Transition rules for graph reduction}
+\label{sect:templ:transition-rules}
+
+The state of the template instantiation graph reduction machine
+is a quadruple
+\[
+\mbox{\em (stack, dump, heap, globals)}
+\]
+or {\em(s,d,h,f)\/} for short.
+\begin{itemize}
+\item
+The {\em stack\/} is a stack of {\em addresses}, each of which
+identifies a {\em node\/} in the heap.
+These nodes form the spine of the expression being
+evaluated.
+The notation $a_1:s$ denotes a stack whose top
+element is $a_1$ and the rest of which is $s$.
+\item
+The {\em dump\/}\index{dump} records the state of the spine stack
+\index{spine stack}
+prior to
+the evaluation of an argument of a strict primitive.
+The dump will not be used at all in the Mark 1 machine, but it will
+be useful for subsequent versions.
+\item
+The {\em heap\/}\index{heap} is a collection of tagged {\em nodes}\index{node}.
+The notation $h[a:node]$ means that
+in the heap $h$
+the address $a$ refers to the node $node$.
+\item
+For each supercombinator (and later for each primitive),
+{\em globals\/}\index{global}
+gives the address of heap node representing the supercombinator
+(or primitive).
+\end{itemize}
+
+A heap node can take one of three forms (for our most primitive machine):
+\begin{itemize}
+\item
+$@NAp@~a_1~a_2$ represents
+the application of the node whose address is $a_1$ to that
+whose address is $a_2$.
+\item
+$@NSupercomb@~args~body$ represents a supercombinator
+with arguments $args$ and body $body$.
+\item
+$@NNum@~n$ represents the number $n$.
+\end{itemize}
+
+There are only two state transition rules for this primitive
+template instantiation machine.  The first one describes how to
+unwind\index{unwind}
+a single application node onto the spine stack:
+\tirule{
+	\tistate{a:s}{d}{h[a:@NAp@~ a_1~ a_2]}{f}
+}{
+	\tistate{a_1:a:s}{d}{h}{f}
+}
+\label{rule:unwind}
+(The heap component of the second line of this rule still includes the
+mapping of address $a$ to $@NAp@~a_1~a_2$, but we do not write it out
+again, to save clutter.)
+Repeated application of this rule will unwind the entire spine of
+the expression onto the stack, until the node on top of the stack
+is no longer a @NAp@ node.
+
+The second rule describes how to perform a
+supercombinator reduction.\index{supercombinator!reduction}
+\tirulew{
+	\tistate{a_0:a_1:\ldots:a_n:s}{d}
+		{h[a_0:@NSupercomb@~ [x_1,\ldots,x_n]~body]}
+		{f}
+}{
+	\tistate{a_r:s}{d}{h'}{f}
+}{
+	(h',a_r) = instantiate~ body~ h~
+			f[x_1 \mapsto a_1,~ \ldots,~ x_n \mapsto a_n]
+}
+\label{rule:sc1}
+Most of the interest in this rule is hidden inside the
+function $instantiate$.  Its arguments are:
+\begin{itemize}
+\item
+the expression to instantiate,
+\item
+a heap,
+\item
+the global mapping of names to heap addresses, $f$, augmented
+by the mapping of argument names to their addresses obtained from the
+stack.
+\end{itemize}
+It returns a new heap and the address of the (root of the) newly constructed
+instance.
+Such a powerful operation is
+really at variance with the spirit of state transition systems,
+where each step is meant to be a simple atomic action, but that is the
+nature of the template instantiation machine.
+The implementations of later chapters will all have truly atomic actions!
+
+Notice that the root of the redex is not itself affected by this rule;
+it is merely replaced on the stack by the root of the result.
+In other words, these rules describe a tree-reduction machine,
+which does {\em not\/} update\index{updates}
+the root of the redex, rather
+than a graph-reduction
+machine.
+We will improve on this later in Section \ref{sect:templ:update}.
+
+\subsection{Structure of the implementation}
+
+Now that we have a specification of our machine, we are ready
+to embark on its implementation.
+
+Since we are writing the implementation in a functional language,
+we must write a function @run@, say,
+to do the job.  What should its type be?
+It should take a filename, run the program therein, and print
+out the results, which might be either the final result or some kind
+of execution trace.
+So the type of @run@ is given by the following type signature:
+
+M> run :: [char] -> [char]
+GH> runProg :: [Char] -> [Char]      -- name changed to not conflict
+
+\par
+Now we can think about how @run@ might be built up.  Running a program
+consists of four stages:
+\begin{enumerate}
+\item
+Parse the program from the expression found in a specified file.
+The @parse@ function takes a filename and returns the parsed program.
+
+M0>	parse :: [char] -> coreProgram
+GH0>	parse :: [Char] -> CoreProgram
+
+\item
+Translate the program
+into a form suitable for execution.  The @compile@ function,
+which performs this task, takes a program and
+produces the initial state of the template instantiation machine:
+
+M> compile :: coreProgram -> tiState
+GH> compile :: CoreProgram -> TiState
+
+@tiState@ is the type of the state of the template instantiation machine.
+(The prefix `@ti@' is short for template instantiation.)
+\item
+Execute the program, by performing repeated state transitions until
+a final state is reached.  The result is a list of all the states passed
+through; from this we can subsequently
+either extract the final state, or get a trace
+of all the states.
+For the present we will restrict ourselves to programs which return
+a number as their result, so we call this execution function @eval@.
+
+M> eval :: tiState -> [tiState]
+GH> eval :: TiState -> [TiState]
+
+\item
+Format the results for printing.  This is done by the function @showResults@,
+which selects which information to print, and formats it into a
+list of characters.
+
+M> showResults :: [tiState] -> [char]
+GH> showResults :: [TiState] -> [Char]
+
+\end{enumerate}
+The function @run@ is just the composition of these four functions:
+
+M> run = showResults . eval . compile . parse
+GH> runProg = showResults . eval . compile . parse  -- "run": name conflict
+
+We will devote a subsection to each of these phases.
+
+
+\subsection{The parser}
+
+The source language, including the @parse@ function,
+is defined in a separate module @language@, defined
+in Chapter~\ref{sect:language}.
+We make it available using the
+@%include@ directive to import the module:
+
+M> %include "language"
+G> -- :a language.lhs
+H> -- import Language
+
+\subsection{The compiler}
+
+In this section we define the @compile@ function.  We will need
+the data types and functions defined in the @utils@ module, so we
+use @%include@ to make it available.
+
+M> %include "utils"
+G> -- :a utils.lhs
+H> -- import Utils
+
+Now we need to consider the representation of the data types the
+compiler manipulates.
+
+\subsubsection{Data types}
+
+The compiler produces the initial state of the machine, which has
+type @tiState@, so the next thing to do is to define how machine states
+are represented, using a type synonym\index{type synonym}:
+
+M> tiState == (tiStack, tiDump, tiHeap, tiGlobals, tiStats)
+GH> type TiState = (TiStack, TiDump, TiHeap, TiGlobals, TiStats)
+
+The state of the machine is a quintuple whose first four components correspond
+exactly to those given in Section~\ref{sect:templ:transition-rules}, and whose
+fifth component is used to accumulate statistics.
+
+Next, we need to consider the representation of each of these components.
+
+\begin{itemize}
+\item
+The {\em spine stack\/}\index{spine stack}
+is just a stack of {\em heap addresses\/}:
+
+M> tiStack == [addr]
+GH> type TiStack = [Addr]
+
+We choose to represent the stack as a list.  The elements of the stack
+are members of the abstract data type @addr@ defined in the @utils@
+module (Appendix~\ref{sect:heap}).
+They represent heap addresses, and by making them abstract we ensure that
+we can only use the operations provided on them by the @utils@ module.
+Thus it is impossible for us to add one to an address, say, by mistake.
+
+\item
+The {\em dump\/} is
+not required until Section~\ref{sect:templ:primitives}, but we make it
+part of the state already because adding it later would require many tiresome
+alterations to the state transition rules.  For now we give it a trivial
+type definition, consisting of just a single constructor with no arguments.
+
+M1-3> tiDump ::= DummyTiDump
+GH1-3> data TiDump = DummyTiDump
+1-3> initialTiDump = DummyTiDump
+
+\item
+The {\em heap\/} is represented by the @heap@ abstract data type defined in
+the @utils@ module.  We have to say what the heap contains, namely objects
+of type @node@ (yet to be defined):
+
+M> tiHeap == heap node
+GH> type TiHeap = Heap Node
+
+Heap @node@s are represented by the following algebraic data type
+declaration, which corresponds to the list of possibilities given in
+Section~\ref{sect:templ:transition-rules}:
+
+M1-2> node ::= NAp addr addr                     || Application
+M1-2>          | NSupercomb name [name] coreExpr || Supercombinator
+M1-2>          | NNum num                        || A number
+GH1-2> data Node = NAp Addr Addr                     -- Application
+GH1-2>             | NSupercomb Name [Name] CoreExpr -- Supercombinator
+GH1-2>             | NNum Int                        -- A number
+
+The only difference is that we have added an extra field of type
+@name@ to the @NSupercomb@ constructor, which is used to hold the name
+of the supercombinator.  This is used only for documentation and
+debugging purposes.
+
+\item
+The {\em globals\/} component associates each
+supercombinator name with
+the address of a heap node containing its definition:
+
+M> tiGlobals == assoc name addr
+GH> type TiGlobals = ASSOC Name Addr
+
+The @assoc@ type is defined in the @utils@ module, along with its
+operations (Appendix~\ref{sect:assoc}).
+It is actually defined there as a type synonym (not an abstract
+data type) because it is so convenient to be able to manipulate associations
+using the built-in syntax for lists.  There is a tension here between
+abstraction and ease of programming.
+
+\item
+The @tiStats@ component of the state is not mentioned in the
+transition rules, but we will use it to collect run-time performance
+statistics\index{statistics} on what the machine does.
+So that we can easily change what statistics are collected,
+we will make it an abstract type.  To begin with, we will record only
+the number of steps taken:
+
+M> abstype tiStats
+M> with  tiStatInitial  :: tiStats
+M>       tiStatIncSteps :: tiStats -> tiStats
+M>       tiStatGetSteps :: tiStats -> num
+GH> tiStatInitial  :: TiStats
+GH> tiStatIncSteps :: TiStats -> TiStats
+GH> tiStatGetSteps :: TiStats -> Int
+
+The implementation is rather simple:
+
+M> tiStats == num
+GH> type TiStats = Int
+> tiStatInitial    = 0
+> tiStatIncSteps s = s+1
+> tiStatGetSteps s = s
+
+A useful function @applyToStats@ applies a given function to the
+statistics\index{statistics}
+component of the state:
+
+M> applyToStats :: (tiStats -> tiStats) -> tiState -> tiState
+GH> applyToStats :: (TiStats -> TiStats) -> TiState -> TiState
+> applyToStats stats_fun (stack, dump, heap, sc_defs, stats)
+>  = (stack, dump, heap, sc_defs, stats_fun stats)
+
+\end{itemize}
+This completes our definition of the data types involved.
+
+\subsubsection{The compiler itself}
+\label{sect:ti:compiler}
+\label{sect:mapAccuml-example}
+
+The business of the compiler is to take a program, and from
+it create the initial state of the machine:
+
+> compile program
+>  = (initial_stack, initialTiDump, initial_heap, globals, tiStatInitial)
+>    where
+>    sc_defs = program ++ preludeDefs ++ extraPreludeDefs
+>
+>    (initial_heap, globals) = buildInitialHeap sc_defs
+>
+>    initial_stack = [address_of_main]
+>    address_of_main = aLookup globals "main" (error "main is not defined")
+
+\par
+Let us consider each of the definitions in the @where@ clause in turn.
+The first, @sc_defs@, is just a list
+of all the supercombinator definitions involved in the program.
+Recall that @preludeDefs@ was defined in Section~\ref{sect:prelude}
+to be the list of standard supercombinator definitions which
+are always included in every program.  @extraPreludeDefs@ is a list of
+any further standard functions we may want to add; for the present it is
+empty:
+
+1-4> extraPreludeDefs = []
+
+\par
+The second definition uses an auxiliary function, @buildInitialHeap@, to
+construct an initial heap containing an @NSupercomb@ node for
+each supercombinator, together with an association list @globals@ which
+maps each supercombinator name onto the address of its node.
+
+Lastly, @initial_stack@ is defined to contain just one item, the address
+of the node for the supercombinator @main@, obtained from @globals@.
+
+Now we need to consider the definition of @buildInitialHeap@,
+which is a little
+tricky.  We need to do something for each element of the list @sc_defs@,
+but what makes it awkward is that the `something' involves heap allocation.
+Since each heap allocation produces a new heap, we need to find a way of
+passing the heap along from one element of @sc_defs@ to the next.
+This process starts with the empty heap, @hInitial@
+(Appendix~\ref{sect:heap}).
+
+We encapsulate this idea in a higher-order function\index{higher-order function}
+@mapAccuml@, which
+we will use quite a lot in this book.  @mapAccuml@ takes three
+arguments: $f$, the `processing function'; $acc$, the
+`accumulator'; and a list $[x_1, \ldots, x_n]$.  It takes each
+element of the input list, and applies $f$ to it and the current
+accumulator\index{accumulator}.  $f$ returns a pair of results, an
+element of the result list and a new value for the accumulator.
+@mapAccuml@ passes the accumulator along from one call of $f$ to the
+next, and eventually returns a pair of results: $acc'$, the final
+value of the accumulator; and the result list $[y_1, \ldots, y_n]$.
+Figure~\ref{fig:mapAccuml} illustrates this plumbing.  The definition
+of @mapAccuml@ is given in Appendix~\ref{sect:util-funs}.
+\begin{figure} %\centering
+\input{map_acc.tex}
+\caption{A picture of $@mapAccuml@~f~acc~[x_1,\ldots,x_n]$}
+\label{fig:mapAccuml}
+\end{figure}
+
+In our case, the `accumulator' is the heap, with initial value
+@hInitial@.  The list $[x_1,\ldots,x_n]$ is the supercombinator
+definitions, @sc_defs@, while the result list $[y_1, \ldots, y_n]$ is
+the association of supercombinator names and addresses, @sc_addrs@.
+Here, then, is the definition of @buildInitialHeap@.
+
+M1-3> buildInitialHeap :: [coreScDefn] -> (tiHeap, tiGlobals)
+GH1-3> buildInitialHeap :: [CoreScDefn] -> (TiHeap, TiGlobals)
+1-3> buildInitialHeap sc_defs = mapAccuml allocateSc hInitial sc_defs
+
+\par
+The `processing function', which we will call @allocateSC@,
+allocates a single supercombinator, returning a new heap and a member
+of the @sc_addrs@ association list.
+
+M> allocateSc :: tiHeap -> coreScDefn -> (tiHeap, (name, addr))
+GH> allocateSc :: TiHeap -> CoreScDefn -> (TiHeap, (Name, Addr))
+> allocateSc heap (name, args, body)
+>  = (heap', (name, addr))
+>    where
+>    (heap', addr) = hAlloc heap (NSupercomb name args body)
+
+That completes the definition of the compiler. Next, we turn our attention
+to the evaluator.
+
+\subsection{The evaluator\index{evaluator}}
+
+The evaluator @eval@ takes an initial machine state,
+and runs the machine one step at a time, returning the list of
+all states it has been through.
+
+@eval@ always returns the current state as the first element of its
+result.  If the current state is a final state, no further states are
+returned; otherwise, @eval@ is applied recursively to the next state.
+The latter is obtained by
+taking a single step (using @step@), and then calling @doAdmin@ to
+do any administrative work required between steps.
+
+> eval state = state : rest_states
+>              where
+M>              rest_states = [],                tiFinal state
+M>                          = eval next_state,   otherwise
+GH>              rest_states | tiFinal state = []
+GH>                          | otherwise = eval next_state
+>              next_state  = doAdmin (step state)
+
+M> doAdmin :: tiState -> tiState
+GH> doAdmin :: TiState -> TiState
+> doAdmin state = applyToStats tiStatIncSteps state
+
+\subsubsection{Testing for a final state}
+
+The function @tiFinal@ detects the final state\index{final state}.
+We are only finished if the stack contains a single object, and it is
+either a number or a data object.
+
+M1-3> tiFinal :: tiState -> bool
+GH1-3> tiFinal :: TiState -> Bool
+1-3>
+1-3> tiFinal ([sole_addr], dump, heap, globals, stats)
+1-3>  = isDataNode (hLookup heap sole_addr)
+1-3>
+1-3> tiFinal ([], dump, heap, globals, stats) = error "Empty stack!"
+M1-3> tiFinal state = False              || Stack contains more than one item
+GH1-3> tiFinal state = False              -- Stack contains more than one item
+
+Notice that the stack element is an address, which we need to look up in
+the heap before we can check whether it is a number or not.
+We should also produce a sensible error message if the stack should be empty
+(which should never happen).
+
+Finally, we can define @isDataNode@:
+
+M1-4> isDataNode :: node -> bool
+GH1-4> isDataNode :: Node -> Bool
+1-4> isDataNode (NNum n) = True
+1-4> isDataNode node     = False
+
+\subsubsection{Taking a step}
+
+The function @step@ maps one state into its successor:
+
+M> step :: tiState -> tiState
+GH> step :: TiState -> TiState
+
+It has to do case analysis on the node on top
+of the spine stack\index{spine stack}, so it extracts
+this node from the heap,
+and uses @dispatch@ to call an appropriate function to
+do the hard work for each form of node.
+
+1-2> step state
+1-2>  = dispatch (hLookup heap (hd stack))
+1-2>    where
+1-2>    (stack, dump, heap, globals, stats) = state
+1-2>
+1-2>    dispatch (NNum n)                  = numStep state n
+1-2>    dispatch (NAp a1 a2)               = apStep  state a1 a2
+1-2>    dispatch (NSupercomb sc args body) = scStep  state sc args body
+
+\par
+We can deal with the cases for numbers and applications with very little
+trouble.
+It is an error for there to be a number
+on top of the stack, since
+a number should never be applied as a function.
+(If it was the only object on the stack, execution will have been halted
+by @tiFinal@.)
+
+M1-2> numStep :: tiState -> num -> tiState
+GH1-2> numStep :: TiState -> Int -> TiState
+1-2> numStep state n = error "Number applied as a function!"
+
+Dealing with an application node is described by the unwind\index{unwind}
+rule
+(\ruleref{rule:unwind}),
+which can be translated directly into Miranda:
+
+M1-3> apStep :: tiState -> addr -> addr -> tiState
+GH1-3> apStep :: TiState -> Addr -> Addr -> TiState
+1-3> apStep (stack, dump, heap, globals, stats) a1 a2
+1-3>  = (a1 : stack, dump, heap, globals, stats)
+
+
+\subsubsection{Applying a supercombinator}
+\label{instantiate}
+
+To apply a supercombinator, we must
+instantiate its body,
+binding the argument names to the argument addresses found
+in the stack (\Ruleref{rule:sc1}).
+Then we discard the arguments from the stack, including
+the root of the redex, and push the (root of the) result of the
+reduction onto the stack instead.
+(Remember, in this first version of the machine we are not performing updates.)
+\label{page:sc-step}
+
+M1-2> scStep   :: tiState -> name -> [name] -> coreExpr -> tiState
+GH1-2> scStep   :: TiState -> Name -> [Name] -> CoreExpr -> TiState
+1-2> scStep (stack, dump, heap, globals, stats) sc_name arg_names body
+1-2>  = (new_stack, dump, new_heap, globals, stats)
+1-2>    where
+M1-2>    new_stack = result_addr : (drop (#arg_names+1) stack)
+GH1-2>    new_stack = result_addr : (drop (length arg_names+1) stack)
+1-2>
+1-2>    (new_heap, result_addr) = instantiate body heap env
+1-2>    env = arg_bindings ++ globals
+M1-2>    arg_bindings = zip2 arg_names (getArgs heap stack)
+GH1-2>    arg_bindings = zip2 arg_names (getargs heap stack)
+
+\par
+In order to apply supercombinators and primitives, we need an
+auxiliary function.
+The function @getArgs@ takes a stack (which must consist
+of a supercombinator on top of a stack of application nodes),
+and returns a list formed from the argument of each of the application nodes
+on the stack.
+
+M> getArgs :: tiHeap -> tiStack -> [addr]
+M> getArgs heap (sc:stack)
+GH> -- now getargs since getArgs conflicts with Gofer standard.prelude
+GH> getargs :: TiHeap -> TiStack -> [Addr]
+GH> getargs heap (sc:stack)
+>  = map get_arg stack
+>    where get_arg addr = arg  where (NAp fun arg) = hLookup heap addr
+
+\par
+The @instantiate@ function takes an expression, a heap and
+an environment associating
+names with addresses.\index{instantiation}\index{template instantiation}
+It creates an instance of the expression in the heap, and
+returns the new heap and address of the root of the instance.
+The environment is used by @instantiate@
+to specify the addresses to be substituted for supercombinators and
+local variables.
+
+M> instantiate :: coreExpr              || Body of supercombinator
+M>                -> tiHeap             || Heap before instantiation
+M>                -> assoc name addr    || Association of names to addresses
+M>                -> (tiHeap, addr)     || Heap after instantiation, and
+M>                                      || address of root of instance
+GH> instantiate :: CoreExpr              -- Body of supercombinator
+GH>                -> TiHeap             -- Heap before instantiation
+GH>                -> ASSOC Name Addr    -- Association of names to addresses
+GH>                -> (TiHeap, Addr)     -- Heap after instantiation, and
+GH>                                      -- address of root of instance
+
+\par
+\label{page:instantiate}
+The case for numbers is quite straightforward.
+
+> instantiate (ENum n) heap env = hAlloc heap (NNum n)
+
+\par
+The case for applications is also simple; just instantiate the
+two branches, and build the application node.
+Notice how we `thread' the heap though the recursive calls to @instantiate@.
+That is, the first call to instantiate is given a heap and produces a new
+heap; the latter is given to the second call to instantiate, which produces
+yet another heap; the latter is the heap in which the new application node
+is allocated, producing a final heap which is returned to the caller.
+
+> instantiate (EAp e1 e2) heap env
+>  = hAlloc heap2 (NAp a1 a2) where (heap1, a1) = instantiate e1 heap  env
+>                                   (heap2, a2) = instantiate e2 heap1 env
+
+\par
+For variables, we simply look up the name in the environment
+we are given, producing a suitable error message if we do not find
+a binding for it.
+
+> instantiate (EVar v) heap env
+>  = (heap, aLookup env v (error ("Undefined name " ++ show v)))
+
+@aLookup@, which is defined in Appendix~\ref{sect:assoc}, looks up
+a variable in an association list, but returns its third argument if the
+lookup fails.
+
+We postpone the question of instantiating
+constructors and @let(rec)@ expressions
+by calling auxiliary functions @instantiateConstr@ and @instantiateLet@,
+which each give errors for the present; later we will
+replace them with operational definitions.  Lastly, the template machine is
+unable to handle @case@ expressions at all, as we will see.
+
+> instantiate (EConstr tag arity) heap env
+>               = instantiateConstr tag arity heap env
+> instantiate (ELet isrec defs body) heap env
+>               = instantiateLet isrec defs body heap env
+> instantiate (ECase e alts) heap env = error "Can't instantiate case exprs"
+
+1-4> instantiateConstr tag arity heap env
+1-4>            = error "Can't instantiate constructors yet"
+1> instantiateLet isrec defs body heap env
+1>            = error "Can't instantiate let(rec)s yet"
+
+\subsection{Formatting the results}
+
+The output from @eval@ is a list of states, which are rather
+voluminous if printed in their entirety.
+Furthermore, since the heaps and stacks are abstract objects, Miranda
+will not print them at all.
+So the @showResults@ function formats the output for us, using the
+@iseq@ data type introduced in Section~\ref{sect:pretty}.
+
+> showResults states
+>  = iDisplay (iConcat [ iLayn (map showState states),
+>                      showStats (last states)
+>           ])
+
+We display the state just by showing the contents of the stack.  It is
+too tiresome to print the heap in its entirety after each step, so
+we will content ourselves with printing the contents of nodes referred to
+directly from the stack.  The other components of the state do not change,
+so we will not print them either.
+
+M> showState :: tiState -> iseq
+GH> showState :: TiState -> Iseq
+1-3> showState (stack, dump, heap, globals, stats)
+1-3>  = iConcat [ showStack heap stack, iNewline ]
+
+\par
+We display the stack, topmost element first, by displaying the address on
+the stack, and the contents of the node to which it points.  Most of these
+nodes are application nodes, and for each of these we
+also display the contents of its argument node.
+
+M> showStack :: tiHeap -> tiStack -> iseq
+GH> showStack :: TiHeap -> TiStack -> Iseq
+> showStack heap stack
+>  = iConcat [
+>        iStr "Stk [",
+>        iIndent (iInterleave iNewline (map show_stack_item stack)),
+>        iStr " ]"
+>    ]
+>    where
+>    show_stack_item addr
+>     = iConcat [ showFWAddr addr, iStr ": ",
+>                 showStkNode heap (hLookup heap addr)
+>       ]
+
+M> showStkNode :: tiHeap -> node -> iseq
+GH> showStkNode :: TiHeap -> Node -> Iseq
+> showStkNode heap (NAp fun_addr arg_addr)
+>  = iConcat [   iStr "NAp ", showFWAddr fun_addr,
+>                iStr " ", showFWAddr arg_addr, iStr " (",
+>                showNode (hLookup heap arg_addr), iStr ")"
+>    ]
+> showStkNode heap node = showNode node
+
+\par
+@showNode@ displays the value of a @node@.
+It prints only the name stored
+inside @NSupercomb@ nodes, rather than printing the
+complete value; indeed this is the only reason the name is stored inside
+these nodes.
+
+M1-2> showNode :: node -> iseq
+GH1-2> showNode :: Node -> Iseq
+1-2> showNode (NAp a1 a2) = iConcat [ iStr "NAp ", showAddr a1,
+1-2>                                  iStr " ",    showAddr a2
+1-2>                        ]
+1-2> showNode (NSupercomb name args body) = iStr ("NSupercomb " ++ name)
+M1-2> showNode (NNum n) = (iStr "NNum ") $iAppend (iNum n)
+GH1-2> showNode (NNum n) = (iStr "NNum ") `iAppend` (iNum n)
+
+M> showAddr :: addr -> iseq
+GH> showAddr :: Addr -> Iseq
+> showAddr addr = iStr (show addr)
+>
+M> showFWAddr :: addr -> iseq    || Show address in field of width 4
+GH> showFWAddr :: Addr -> Iseq    -- Show address in field of width 4
+M> showFWAddr addr = iStr (spaces (4-#str) ++ str)
+GH> showFWAddr addr = iStr (space (4 -  length str) ++ str)
+>                   where
+>                   str = show addr
+
+\par
+@showStats@ is responsible for printing out the accumulated statistics:
+
+M> showStats :: tiState -> iseq
+GH> showStats :: TiState -> Iseq
+> showStats (stack, dump, heap, globals, stats)
+>  = iConcat [ iNewline, iNewline, iStr "Total number of steps = ",
+>              iNum (tiStatGetSteps stats)
+>    ]
+
+%\subsection{Exercises}
+
+\begin{exercise}
+\label{ex:templ:test}
+Test the implementation given so far.  Here is a suitable test program:
+\begin{verbatim}
+	main = S K K 3
+\end{verbatim}
+The result should be the number 3.
+Invent a couple more test programs and check that they work.
+Remember, we have not yet defined any arithmetic operations!
+\end{exercise}
+
+\begin{exercise}
+Modify @showState@ so that it prints out the entire contents of the heap.
+(Hint: use @hAddresses@ to discover the addresses of all the nodes in the
+heap.)
+In this way you can see how the heap evolves from one step to the next.
+\end{exercise}
+
+\begin{exercise}
+@scStep@ will fail
+if the supercombinator or
+primitive is applied to too few arguments.  Add a suitable
+check and error message to @scStep@ to detect this case.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:templ:stats}
+Modify your interpreter to collect more execution statistics.
+For example, you could accumulate:
+\begin{itemize}
+\item
+The number of reductions, perhaps split into supercombinator
+reductions and primitive reductions.
+\item
+The number of each kind of heap operation, especially allocations.
+The most convenient way to do this is to modify the @heap@ abstract
+data type to accumulate this information itself, though this only
+works for heap operations which return a new heap as part of the
+result.
+\item
+The maximum stack depth.
+\end{itemize}
+\end{exercise}
+\begin{exercise}
+In the definition of @scStep@, the environment @env@ which is passed to
+@instantiate@ is defined as
+\begin{verbatim}
+	env = arg_bindings ++ globals
+\end{verbatim}
+What difference would it make if the arguments to @++@ were reversed?
+\end{exercise}
+\begin{exercise}
+\label{ex:templ:eval}
+(Slightly tricky.)
+You might think that the following definition for @eval@ would be more
+obvious than the one given:
+\begin{verbatim}
+	eval state = [state],                   tiFinal state
+		   = state : eval next_state,   otherwise
+\end{verbatim}
+(where @next_state@ is defined as before).
+Why is this an inferior definition?  (Hint: think about what
+would happen if all the states were being formatted by @showResults@, and
+some error occurred when evaluating @tiFinal state@, such as an attempt
+to access a non-existent heap node.
+Would the state which caused the error be printed?  If not, why not?)
+\end{exercise}
+
+\section{Mark 2: @let(rec)@ expressions}
+\index{template instantiation machine!Mark 2}
+\index{let expressions@@@let@ expressions!in template-instantiation machine}
+\index{letrec expressions@@@letrec@ expressions!in template-instantiation machine}
+
+Our first enhancement is to make the machine capable of
+dealing with @let@ and @letrec@ expressions.
+As discussed in Section~\ref{sect:templ:supercomb-review}, the bodies
+of supercombinators may contain @let(rec)@ expressions, which are
+regarded as textual descriptions of a graph.
+
+It follows that the only change we have to make to our implementation is to
+enhance @instantiate@, so that it has an equation for the @ELet@ constructor.
+
+\begin{exercise}
+\label{ex:inst-let}
+Add an equation to @instantiate@ for {\em non-recursive\/}
+@let@ expressions.
+What you will need to do to instantiate \mbox{@(ELet nonRecursive defs body)@}
+is:
+\begin{enumerate}
+\item
+instantiate the
+right-hand side of each of the definitions in @defs@;
+\item
+augment the
+environment to bind the names in @defs@ to the addresses of the
+newly constructed instances;
+\item
+call @instantiate@ passing the augmented
+environment and the expression @body@.
+\end{enumerate}
+\end{exercise}
+This still only takes care of @let@ expressions.
+The result of instantiating a @letrec@ expression is a {\em cyclic\/} graph,
+whereas @let@ expressions give rise to acyclic graphs.
+
+\begin{exercise}
+\label{ex:inst-letrec}
+Copy your equation for the non-recursive @ELet@ of @instantiate@,
+and modify
+it to work for the recursive case (or modify your definition
+to deal with both).
+
+(Hint: do everything exactly as in the @let@ case, except that in
+Step 1 pass the {\em augmented\/} environment (constructed in
+Step 2) to @instantiate@, instead of the {\em existing\/} environment.)
+\end{exercise}
+
+The hint in this exercise
+seems curious, because it requires the name-to-address bindings produced in
+Step 2 to be used as an input to Step 1.
+If you try this in Miranda it all works perfectly because,
+as in any non-strict functional language, the inputs to a function do
+not have to be evaluated before the function is called.
+In a real implementation we would have to do this trick `by hand',
+by working out the addresses at which each of the (root) nodes in
+the @letrec@ will be allocated, augmenting the environment to
+reflect this information, and then instantiating the right-hand sides.
+
+Here is a test program, to see if your implementation works:
+\begin{verbatim}
+    pair x y f = f x y ;
+    fst p = p K ;
+    snd p = p K1 ;
+    f x y = letrec
+		a = pair x b ;
+		b = pair y a
+	    in
+	    fst (snd (snd (snd a))) ;
+    main = f 3 4
+\end{verbatim}
+The result should be 4.
+Can you figure out how this program works?  (All will be revealed in
+Section~\ref{sect:template:data-str-hof}.)
+
+\begin{exercise}
+Consider the program
+\begin{verbatim}
+    main = letrec f = f x in f
+\end{verbatim}
+What happens if you run this program?  Could this problem ever arise
+in a strongly typed language such as Miranda?
+\end{exercise}
+
+\section{Mark 3: Adding updating}
+\label{sect:templ:update}
+\index{template instantiation machine!Mark 3}
+\index{updates!in template-instantiation machine}
+
+So far our reduction machine does not perform any
+updates,
+so shared sub-expressions may be evaluated many times.
+As explained in Section~\ref{sect:templ:update-review}
+the easiest way to fix the problem is to update the root of the
+redex with an indirection\index{indirections} node pointing to the result.
+
+We can express this by modifying the state transition rule (\ref{rule:sc1})
+for supercombinator redexes:
+\tirulew{
+	\tistate{a_0:a_1:\ldots:a_n:s}{d}
+		{h[a_0:@NSupercomb@~ [x_1,\ldots,x_n]~body]}
+		{f}
+}{
+	\tistate{a_r:s}{d}{h'[a_n:@NInd@~a_r]}{f}
+}{
+	(h',a_r) = instantiate~ body~ h~
+			f[x_1 \mapsto a_1,~ \ldots,~ x_n \mapsto a_n]
+}
+\label{rule:sc2}
+The difference is that the heap $h'$ returned by the
+$instantiate$ function is further modified by overwriting the node $a_n$
+(the root of the redex) with an indirection to $a_r$ (the root of the result,
+returned by $instantiate$).  Notice that if the supercombinator is
+a CAF\index{CAF}
+(see Section~\ref{sect:caf}), then $n=0$ and the node to be modified is
+the supercombinator node itself.
+
+One further modification is required.  Since we may now encounter
+indirections\index{indirections}
+during unwinding\index{unwind}
+the spine, we need to add a new rule to cope with this case:
+\tirule{
+	\tistate{a:s}{d}{h[a:@NInd@~ a_1]}{f}
+}{
+	\tistate{a_1:s}{d}{h}{f}
+}
+\label{rule:unwind-ind}
+The address of the indirection node\index{indirections},
+$a$, is removed from the stack, just
+as if it had never been there.
+
+There are several things we need to do to implement these new rules:
+\begin{itemize}
+\item
+Add a new node constructor, @NInd@, to the @node@ data type.
+This gives the following revised definition:
+
+M3> node ::= NAp addr addr                       || Application
+M3>          | NSupercomb name [name] coreExpr   || Supercombinator
+M3>          | NNum num                          || Number
+M3>          | NInd addr                         || Indirection
+GH3> data Node = NAp Addr Addr                      -- Application
+GH3>            | NSupercomb Name [Name] CoreExpr   -- Supercombinator
+GH3>            | NNum Int                          -- Number
+GH3>            | NInd Addr                         -- Indirection
+
+We need to add a new equation to @showNode@ to take account of this
+extra constructor.
+\item
+Modify @scStep@ to use @hUpdate@ to
+update the root of the redex with an indirection
+to the result (\ruleref{rule:sc2}).
+\item
+Add an equation to the definition of @dispatch@ to cope with indirections
+(\ruleref{rule:unwind-ind}).
+\end{itemize}
+
+\begin{exercise}
+Make the modifications to perform updates with indirection nodes.
+Try out the effect of your changes by running the following program
+on both the Mark 1 and Mark 3 versions of your reduction machine:
+\begin{verbatim}
+	id x = x ;
+	main = twice twice id 3
+\end{verbatim}
+(Recall that @twice@ is defined in @preludeDefs@
+-- Section~\ref{sect:prelude}.)
+Try to figure out what would happen by reducing it by hand first.
+What happens if you define @main@ to be @twice twice twice id 3@?
+\end{exercise}
+
+\subsection{Reducing the number of indirections\index{indirections!reducing occurrences of}}
+\label{sect:templ:inst-and-upd}
+
+Often we will be updating the root of the redex with an indirection
+to a node newly created by @instantiate@ (or, as we shall see, by a
+primitive).
+Under these circumstances, rather than use an indirection,
+it would be safe to build the root node of the result directly on top
+of the root of the redex.  Because the root of the result is newly created,
+no sharing can be lost by doing this, and it saves building (and subsequently
+traversing) an extra indirection node.
+
+We can do this by defining a new instantiation function, 
+@instantiateAndUpdate@,
+which is just like
+@instantiate@ except that it takes an extra argument,
+the address of the node to be updated with the result, and it does
+not return the address of the resulting graph.
+
+M3-> instantiateAndUpdate
+M3->     :: coreExpr             || Body of supercombinator
+M3->        -> addr              || Address of node to update
+M3->        -> tiHeap            || Heap before instantiation
+M3->        -> assoc name addr   || Association of parameters to addresses
+M3->        -> tiHeap            || Heap after instantiation
+GH3-> instantiateAndUpdate 
+GH3->     :: CoreExpr             -- Body of supercombinator
+GH3->        -> Addr              -- Address of node to update
+GH3->        -> TiHeap            -- Heap before instantiation
+GH3->        -> ASSOC Name Addr   -- Associate parameters to addresses
+GH3->        -> TiHeap            -- Heap after instantiation
+
+\par
+Here, for example, is the definition of @instantiateAndUpdate@ in the
+case
+when the expression is an application:
+
+0> instantiateAndUpdate (EAp e1 e2) upd_addr heap env
+0>  = hUpdate heap2 upd_addr (NAp a1 a2)
+0>    where
+0>    (heap1, a1) = instantiate e1 heap  env
+0>    (heap2, a2) = instantiate e2 heap1 env
+
+Notice that the recursive instantiations are still performed by the old
+@instantiate@; only the root node needs to be updated.
+\begin{exercise}
+Complete the definition of @instantiateAndUpdate@. The following
+points need a little care:
+\begin{itemize}
+\item
+When the expression to be instantiated is a simple variable,
+you will still need to use an indirection.
+Why?
+\item
+Think carefully about the recursive instantiations in the equations for
+@let(rec)@ expressions.
+\end{itemize}
+
+Modify @scStep@
+to call @instantiateAndUpdate@ instead of @instantiate@, passing
+the root of the redex as the address of the node to be updated.
+Remove the update code from @scStep@ itself.
+
+Measure the effect of this modification on the number of reductions and
+the number of heap nodes allocated.
+\end{exercise}
+
+\section{Mark 4: Adding arithmetic}
+\label{sect:templ:primitives}
+\index{template instantiation machine!Mark 4}
+\index{arithmetic!in template-instantation machine}
+
+In this section we will add arithmetic primitives.
+This will involve using the dump for the first time.
+
+\subsection{Transition rules for arithmetic}
+\label{sect:templ:arithmetic}
+
+First of all we develop the state transition rules for
+arithmetic.
+We begin with negation, because it is a simple unary operation.
+The rules for other arithmetic operations are similar.
+Here is a plausible-looking rule when the argument is evaluated:
+\tirule{
+	\tistate{a:a_1:[]}{d}{h\left[
+		\begin{array}{l}
+		a:@NPrim Neg@ \\
+		a_1:@NAp@~ a~ b \\
+		b:@NNum@~ n
+		\end{array}
+	\right]}{f}
+}{
+	\tistate{a_1:[]}{d}{h[a_1:@NNum@~ (-n)]}{f}
+}
+\label{rule:negate}
+Notice that the rule specifies that the stack should contain {\em only\/}
+the argument to the negation operator,
+because anything else would be a type error.
+
+Suppose that the argument is not evaluated: what should happen then?
+We need to evaluate the argument on a fresh stack (so that the evaluations
+do not get mixed up with each other) and,
+when this is complete, restore the old stack and try again.
+We need a way to keep track of the old stack, so we introduce the
+\stressD{dump} for the first time.
+The dump is just a stack of stacks.
+
+The @Neg@ rule to start an evaluation is like this:
+\tirule{
+	\tistate{a:a_1:[]}{d}{h\left[
+		\begin{array}{l}
+		a:@NPrim Neg@ \\
+		a_1:@NAp@~ a~ b
+		\end{array}
+	\right]}{f}
+}{
+	\tistate{b:[]}{(a:a_1:[]):d}{h}{f}
+}
+\label{rule:negate-eval}
+This rule is used only if the previous one (which is a special case of
+this one, with the node at address $b$ being an @NNum@ node) does not apply.
+
+Once the evaluation is complete, we need a rule to restore the old
+stack:
+\tirule{
+	\tistate{a:[]}{s:d}{h[a:@NNum@~ n]}{f}
+}{
+	\tistate{s}{d}{h}{f}
+}
+\label{rule:num-return}
+Once the old stack has been restored, the negation primitive\index{primitives}
+will be found on top of the stack again, but this time the argument
+will be in normal form.
+
+But we need to take care!  The argument will indeed have been
+reduced to normal form, but the root node of the argument will
+have been updated, {\em so it may now
+be an indirection node}.
+Hence, the first rule for @Neg@ will not see the @NNum@ node directly.
+(For example, consider the expression @(negate (id 3))@.)
+
+The easiest way around this is to add an extra transition rule
+just before the rule which unwinds an application node (\ruleref{rule:unwind}).
+In the special case where the argument of the application is
+an indirection\index{indirections},
+the rule updates the application with a new one whose argument points past
+the indirection:
+\tirule{
+	\tistate{a:s}{d}{h\left[\begin{array}{l}
+				a:@NAp@~ a_1~ a_2 \\
+				a_2: @NInd@~ a_3
+			\end{array}\right]}{f}
+}{
+	\tistate{a:s}{d}{h[a:@NAp@~ a_1~ a_3]}{f}
+}
+\label{rule:unwind-indarg}
+In order to
+bring this rule into play, we need to modify \ruleref{rule:negate-eval}
+so that it unwinds anew from the root of the redex after the evaluation is
+completed:
+\tirule{
+	\tistate{a:a_1:[]}{d}{h\left[
+		\begin{array}{l}
+		a:@NPrim Neg@ \\
+		a_1:@NAp@~ a~ b
+		\end{array}
+	\right]}{f}
+}{
+	\tistate{b:[]}{(a_1:[]):d}{h}{f}
+}
+\label{rule:negate-eval1}
+This is rather tiresome; the implementations developed in
+subsequent chapters will do a better job.
+
+\begin{exercise}
+Write the state transition rules for addition.
+(The other dyadic arithmetic operations are practically identical.)
+\end{exercise}
+
+\subsection{Implementing arithmetic}
+\label{sect:templ:primitives-impl}
+
+To implement arithmetic we need to make a number of changes.
+First, we need to redefine the type @tiDump@ to be a stack of stacks, whose
+initial value is empty.\index{dump!in template-instantiation machine}
+
+M4-> tiDump == [tiStack]
+GH4-> type TiDump = [TiStack]
+4-> initialTiDump = []
+
+Next, we need to add a new kind of heap node:
+@NPrim n p@ represents a primitive\index{primitives} whose name is @n@ and
+whose value is @p@, where @p@ is of type @primitive@.
+As in the case of @NSupercomb@ nodes, the name is present in the
+@NPrim@ node solely for debugging and documentation reasons.
+
+M4> node ::= NAp addr addr                       || Application
+M4>          | NSupercomb name [name] coreExpr   || Supercombinator
+M4>          | NNum num                          || Number
+M4>          | NInd addr                         || Indirection
+M4>          | NPrim name primitive              || Primitive
+GH4> data Node = NAp Addr Addr                       -- Application
+GH4>             | NSupercomb Name [Name] CoreExpr   -- Supercombinator
+GH4>             | NNum Int                          -- Number
+GH4>             | NInd Addr                         -- Indirection
+GH4>             | NPrim Name Primitive              -- Primitive
+
+As usual, @showNode@ needs to be augmented as well, to display @NPrim@ nodes.
+The transition rules given in the previous section suggest that
+the data type @primitive@ should be defined like this:
+
+M4> primitive ::= Neg | Add | Sub | Mul | Div
+GH4> data Primitive = Neg | Add | Sub | Mul | Div
+
+with one constructor for each desired primitive.
+
+Now, just as we needed to allocate an @NSupercomb@ node in the
+initial
+heap for each supercombinator, so we need to allocate an @NPrim@ node in
+the initial heap for each primitive.  Then we can add extra bindings
+to the
+$globals$ component of the machine state,
+which
+map the name of each primitive to the address of its node, just as we
+did for supercombinators.  We can do this easily by modifying the definition
+of @buildInitialHeap@, like this:
+
+M4-> buildInitialHeap :: [coreScDefn] -> (tiHeap, tiGlobals)
+GH4-> buildInitialHeap :: [CoreScDefn] -> (TiHeap, TiGlobals)
+4-> buildInitialHeap sc_defs
+4->  = (heap2, sc_addrs ++ prim_addrs)
+4->    where
+4->    (heap1, sc_addrs)   = mapAccuml allocateSc hInitial sc_defs
+4->    (heap2, prim_addrs) = mapAccuml allocatePrim heap1 primitives
+
+\par
+We define an association
+list giving the mapping from variable names to primitives, thus:
+
+M4> primitives :: assoc name primitive
+GH4> primitives :: ASSOC Name Primitive
+4> primitives = [ ("negate", Neg),
+4>                ("+", Add),   ("-", Sub),
+4>                ("*", Mul),   ("/", Div)
+4>              ]
+
+To add further primitives, just add more constructors to the
+@primitive@ type, and more elements to the @primitives@ association list.
+
+We can then define @allocatePrim@, very much as we defined @allocateSc@:
+
+M4-> allocatePrim :: tiHeap -> (name, primitive) -> (tiHeap, (name, addr))
+GH4-> allocatePrim :: TiHeap -> (Name, Primitive) -> (TiHeap, (Name, Addr))
+4-> allocatePrim heap (name, prim)
+4->  = (heap', (name, addr))
+4->    where
+4->    (heap', addr) = hAlloc heap (NPrim name prim)
+
+\par
+Next, we need to augment the @dispatch@ function in @step@ to
+call @primStep@ when it finds a @NPrim@ node.
+@primStep@ performs case analysis on the primitive being used,
+and then calls one of a family of
+auxiliary functions, @primNeg@, @primAdd@ and so on, which actually
+perform the operation.  For the present we content ourselves with
+negation.
+
+4> primStep state Neg   = primNeg state
+
+@primNeg@ needs to do the following:
+\begin{itemize}
+\item
+Use @getArgs@ to extract
+the address of the argument from the stack, and @hLookup@ to get the node
+pointed to by this address.
+\item
+Use the auxiliary function @isDataNode@ to
+check if the argument node is evaluated.
+
+\item
+If it is not evaluated, use \ruleref{rule:negate-eval1} to set up the new
+state ready to evaluate the argument.
+This involves pushing the current stack on the dump, and making a new stack
+whose only element is the argument to @negate@.
+
+\item
+If it is evaluated, use @hUpdate@ to overwrite
+the root of the redex with an @NNum@ node
+containing the result, and return, having modified the stack appropriately.
+\end{itemize}
+
+Next, we need to implement the new rules for unwinding and
+for numbers.
+The definition of @numStep@ must be changed
+to implement \ruleref{rule:num-return}.
+If the stack contains
+just one item, the address of an @NNum node@, and the dump is non-empty,
+@numStep@ should pop the top element of the dump and make it into the new stack.
+If these conditions do not apply, it should signal an error.
+Similarly, the definition of @apStep@ must be changed to implement
+\ruleref{rule:unwind-indarg}.
+It can do this by checking for an indirection\index{indirections}
+in the argument, and using
+@hUpdate@ to update the heap if so.
+
+Lastly, we need to make a change to @tiFinal@.  At present it halts execution
+when the stack contains a single @NNum@; {\em but it must now only do this
+if the dump is empty}, otherwise the new \ruleref{rule:num-return} will never
+get a chance to execute!
+
+\begin{exercise}
+Implement all these changes to add negation,
+and test some programs involving negation.
+For example,
+\begin{verbatim}
+	main = negate 3
+\end{verbatim}
+or
+\begin{verbatim}
+	main = twice negate 3
+\end{verbatim}
+You should also test the following program, to show that the handling of
+indirections is working:
+\begin{verbatim}
+	main = negate (I 3)
+\end{verbatim}
+\end{exercise}
+
+The obvious extension now is to implement addition,
+subtraction and the other arithmetic primitives.
+If we rush ahead blindly
+we will find that all these dyadic arithmetic primitives have a rather
+stereotyped form; indeed they are identical except for the fact that at
+one point we use @*@ or @/@ rather than @+@.
+
+To avoid this duplication, we can instead define a single generic function
+@primArith@ and pass to it the required operation
+as an argument, thus:
+
+4> primStep state Add = primArith state (+)
+4> primStep state Sub = primArith state (-)
+4> primStep state Mul = primArith state (*)
+M4> primStep state Div = primArith state (/)
+GH4> primStep state Div = primArith state (div)
+
+M4> primArith :: tiState -> (num -> num -> num) -> tiState
+GH4> primArith :: TiState -> (Int -> Int -> Int) -> TiState
+
+This is a simple example of the way in which higher-order functions
+\index{higher-order function} can
+enable us to make programs more modular.
+
+\begin{exercise}
+Implement @primArith@, and test your implementation.
+\end{exercise}
+
+
+\section{Mark 5: Structured data}
+\label{sect:templ:tidata}
+\index{template instantiation machine!Mark 5}
+\index{data structures!in template-instantiation machine}
+
+In this section we will add structured
+data types to our reduction machine.
+It would be nice to give an implementation for the @case@ expressions
+of our core language, but it turns out that it is rather hard to do
+so within the framework of a template instantiation machine.
+(Our later implementations will not have this problem.)
+Instead we will use a collection of built-in
+functions, such as @if@, @casePair@ and
+@caseList@, which allow us to manipulate certain structured types.  The
+template machine will remain unable to handle general structured objects.
+
+\begin{exercise}
+Why is it hard to introduce @case@ expressions into the template instantiation
+machine?  (Hint: think about what @instantiate@ would do with a
+@case@ expression.)
+\end{exercise}
+
+\subsection{Building structured data}
+
+Structured data is built with the family of constructors $@Pack{@t,a@}@$
+where $t$ gives the tag\index{tag!of constructor} of the constructor, and $a$
+gives its arity\index{arity!of constructor}
+(Section ~\ref{sect:lang:constructors}),
+so we need a representation
+for these constructor functions in the graph.
+They are really a new form of primitive, so we can do this by adding
+a new constructor @PrimConstr@ to the @primitive@ type.
+Now in the equation for @instantiateConstr@, we can instantiate an
+expression $@EConstr@~ t~ a$ to the heap node
+$@NPrim "Pack"@~ (@PrimConstr@~ t~ a)$.
+
+Next the question arises of how this primitive is implemented.  We need
+to add a case to @primStep@ to match the @PrimConstr@ constructor,
+which calls a new auxiliary function @primConstr@.
+This should check that it is given enough arguments, and if so build
+a structured data object in the heap.
+
+To do this we need to add a new constructor, @NData@, to the
+@node@ type to represent structured data objects.
+The @NData@ constructor contains the
+{\em tag\/}\index{tag!of constructor} of the object, and its
+{\em components}\index{components!of constructor}.
+
+M5> node ::= NAp addr addr                       || Application
+M5>          | NSupercomb name [name] coreExpr   || Supercombinator
+M5>          | NNum num                          || Number
+M5>          | NInd addr                         || Indirection
+M5>          | NPrim name primitive              || Primitive
+M5>          | NData num [addr]                  || Tag, list of components
+GH5> data Node = NAp Addr Addr                     -- Application
+GH5>           | NSupercomb Name [Name] CoreExpr   -- Supercombinator
+GH5>           | NNum Int                          -- Number
+GH5>           | NInd Addr                         -- Indirection
+GH5>           | NPrim Name Primitive              -- Primitive
+GH5>           | NData Int [Addr]                  -- Tag, list of components
+
+\par
+We can now give the rule for $@NPrim@~ (@PrimConstr@~ t~ n)$:
+\tirule{
+	\tistate{a:a_1:\ldots:a_n:[]}{d}{h\left[
+		\begin{array}{l}
+		a:@NPrim (PrimConstr @t~ n@)@ \\
+		a_1:@NAp@~ a~ b_1 \\
+		\ldots \\
+		a_n:@NAp@~ a_{n-1}~ b_n
+		\end{array}
+	\right]}{f}
+}{
+	\tistate{a_n:[]}{d}{h[a_n:@NData@~ t~ [b_1,\ldots,b_n]]}{f}
+}
+\label{rule:prim-constr}
+So much for building structured objects.  The next question is how to take them
+apart, which is expressed by @case@ expressions in the Core language.
+As already mentioned, it is hard to implement @case@ expressions directly,
+so we content ourselves with a few special cases, beginning with booleans.
+
+\subsection{Conditionals\index{conditional!in template-instantation machine}}
+\label{sect:templ:conditional}
+
+The boolean type\index{booleans}
+might be declared in Miranda like this:
+\begin{verbatim}
+	boolean ::= False | True
+\end{verbatim}
+There are two constructors, @True@ and @False@.  Each
+has arity zero, and we arbitrarily assign a tag of one to @False@ and two
+to @True@.  So we can give the following Core-language definitions:
+\begin{verbatim}
+	False = Pack{1,0}
+	True = Pack{2,0}
+\end{verbatim}
+
+Since we cannot have general @case@ expressions, it will suffice to add
+a conditional primitive,
+with the reduction rules:
+\begin{verbatim}
+	if Pack{2,0} t e = t
+	if Pack{1,0} t e = e
+\end{verbatim}
+Operationally, @if@ evaluates its first argument, which it expects to be a
+data object, examines its tag, and selects either its second or third argument
+depending on whether the tag is 2 (@True@) or 1 (@False@) respectively.
+
+\begin{exercise}
+Write the state transition rules for the conditional\index{conditional} primitive.
+You need three rules: two to perform the reduction if the boolean
+condition is already evaluated; and one to start evaluation if the
+condition is not evaluated, by pushing the old
+stack on the dump, and pushing the
+address of the condition on the new empty stack (cf. \ruleref{rule:negate-eval1}).
+You should find that you need to use an indirection in the update for
+the first two rules.
+
+One further rule is missing.  What is it?  (Hint: when evaluation
+of the condition is complete, how does the conditional get re-tried?)
+\end{exercise}
+
+Once you have @if@, you can give Core-language definitions for
+the other boolean operators in terms of
+it and @False@ and @True@.  For example:
+\begin{verbatim}
+	and x y = if x y False
+\end{verbatim}
+
+\begin{exercise}
+\label{ex:templ:prelude-bool}
+Give Core-language definitions for @or@, @xor@ and @not@.
+Add all of these Core-language definitions to @extraPreludeDefs@.
+\end{exercise}
+
+Finally, we need some way of comparing numeric values, which requires
+new primitives @>@, @>=@ and so on.
+
+\subsection{Implementing structured data}
+
+Here is a list of the changes required to the implementation to add
+structured data objects, conditionals and comparison operations.
+\begin{itemize}
+\item
+Add the @NData@ constructor to the @node@ data type.  Extend @showNode@ to
+display @NData@ nodes.
+\item
+Add @PrimConstr@, @If@, @Greater@, @GreaterEq@, @Less@, @LessEq@, @Eq@, @NotEq@
+to the @primitive@ type.
+For all except the first, add suitable pairs to the @primitives@ association
+list, so that the names of these primitives can be mapped to their
+values by @instantiateVar@.
+\item
+Add a definition for @instantiateConstr@ (and @instantiateAndUpdateConstr@
+if necessary).
+\item
+The @isDataNode@ function should identify @NData@ nodes as well as @NNum@ nodes.
+\item
+The @dispatch@ code in @step@ needs an extra case for @NData@ nodes, calling
+a new auxiliary function @dataStep@.
+\item
+Define @dataStep@; it is very similar to @numStep@.
+\item
+Extend @primStep@ to cope with the new primitives @PrimConstr@, @If@, @Greater@
+and so on.
+For @PrimConstr@ and @If@ it should call new auxiliary functions @primConstr@
+and @primIf@.
+The comparison primitives can almost, but not quite, use @primArith@.
+What we need is a slight generalisation of @primArith@:
+
+M5-> primDyadic :: tiState -> (node -> node -> node) -> tiState
+GH5-> primDyadic :: TiState -> (Node -> Node -> Node) -> TiState
+
+which takes a node-combining function instead of a number-combining one.
+It is simple to define @primArith@, and a similar function @primComp@ for
+comparison primitives, in terms of @primDyadic@; and to
+define @primDyadic@ by generalising the definition of @primArith@.
+\end{itemize}
+
+\begin{exercise}
+Make all these changes.
+Now, at last, we can write sensible recursive functions, because we
+have a conditional to terminate the recursion.
+Try, for example, the factorial function
+\begin{verbatim}
+	fac n = if (n == 0) 1 (n * fac (n-1)) ;
+	main = fac 3
+\end{verbatim}
+\end{exercise}
+
+\subsection{Pairs}
+
+The constructors for booleans both have arity zero.  Next, we will
+add the data type of pairs\index{pairs}, which might be declared in Miranda like this:
+\begin{verbatim}
+	pair * ** ::= MkPair * **
+\end{verbatim}
+
+We can build pairs using the @Pack{1,2}@ constructor:
+\begin{verbatim}
+	MkPair = Pack{1,2}
+\end{verbatim}
+How about taking them apart, still without using @case@ expressions?
+For example, consider the following Core-language program involving
+a @case@ expression:
+\begin{verbatim}
+	f p = case p of
+		<1> a b -> b*a*a end
+\end{verbatim}
+Lacking @case@ expressions, we can translate it instead as follows:
+\begin{verbatim}
+	f p = casePair p f'
+	f' a b = b*a*a
+\end{verbatim}
+Here, @f'@ is an auxiliary function, and @casePair@ is a built-in primitive
+defined like this:
+\begin{verbatim}
+	casePair (Pack{1,2} a b) f = f a b
+\end{verbatim}
+
+Operationally, @casePair@ evaluates its first argument, which it expects to
+yield a pair; it then applies its second argument to the two components of
+the pair.
+You can implement this by adding yet another constructor @PrimCasePair@ to
+the @primitive@ type, and writing some more code to handle it.
+
+We can, for example, define @fst@ and @snd@ which extract the
+first and second components of a pair, with the following Core-language
+definitions:
+\begin{verbatim}
+	fst p = casePair p K
+	snd p = casePair p K1
+\end{verbatim}
+
+\begin{exercise}
+Write the state transition rules for @casePair@.  As usual, you will need
+two rules: one to perform the reduction if the first argument is evaluated,
+and one to start its evaluation if not.
+
+Make the necessary changes to implement pairs, as described above.
+
+Test your implementation with the following program (and others of your own):
+\begin{verbatim}
+	main = fst (snd (fst (MkPair (MkPair 1 (MkPair 2 3)) 4)))
+\end{verbatim}
+\end{exercise}
+
+\subsection{Lists}
+
+Now that you have done pairs and booleans, lists should be easy.
+The list\index{lists} data type might be defined in Miranda like this:
+\begin{verbatim}
+	list * ::= Nil | Cons * (list *)
+\end{verbatim}
+We assign the tag 1 to @Nil@ and 2 to @Cons@.
+
+The only question is what exactly
+the @caseList@ primitive, which takes a list apart, should do.
+We recall that the @casePair@ has one `continuation', a function which
+takes the components
+of the pair as its arguments.  @if@ has two `continuations', and selects one
+or other depending on the value of its first argument.
+So @caseList@ is just a combination of both these ideas:
+\begin{verbatim}
+	caseList Pack{1,0}        cn cc = cn
+	caseList (Pack{2,2} x xs) cn cc = cc x xs
+\end{verbatim}
+It takes three arguments, and evaluates the first one.  If it is an empty
+list (i.e.\ has a tag
+of 1 and no components) then @caseList@ simply selects its second argument @cn@.
+Otherwise it must be a list cell (i.e.\ a tag of 2 and two components), and
+@caseList@ applies its third argument @cc@ to these components.
+
+For example, suppose we wanted to implement the @length@ function, which in
+Miranda would be written
+\begin{verbatim}
+	length [] = 0
+	length (x:xs) = 1 + length xs
+\end{verbatim}
+With the aid of @caseList@ we could write length like this:
+\begin{verbatim}
+	length xs = caseList xs 0 length'
+	length' x xs = 1 + length xs
+\end{verbatim}
+
+\begin{exercise}
+Write Core-language definitions for
+@Cons@, @Nil@, @head@ and
+@tail@. To define @head@ and @tail@,
+you will need to introduce a new
+primitive @abort@, which is returned if you take the @head@ or @tail@ of
+an empty list.
+@abort@ can conveniently be implemented by
+calling Miranda's @error@ primitive to stop the program.
+\end{exercise}
+
+\begin{exercise}
+Write the state transition rules for @caseList@,
+implement it and @abort@,
+and add definitions to @preludeDefs@ for @Cons@, @Nil@, @head@ and
+@tail@.
+
+Write some programs to test your implementation.
+\end{exercise}
+
+You should now be able to write a suitable @case@ primitive for any
+structured data type you care to think of.
+\begin{exercise}
+What is the main disadvantage of taking apart structured data types
+with @case@ primitives,
+rather than implementing full @case@ expressions?
+\end{exercise}
+
+\subsection{Printing\index{printing} lists}
+\label{sect:templ:print-list}
+
+So far we have been implicitly assuming that the result of the
+whole program is a number.
+What would we have to do to allow a {\em list\/} of numbers to be the result?
+If this was the case, after evaluating @main@ for a while,
+we would eventually expect to find the address of a list object
+on top of the stack.
+If it is an empty list, the program terminates.
+If it is a @Cons@ cell, and
+its head is not evaluated we need to begin a recursive evaluation
+of its head; if the head is evaluated we need to print the head, and then
+repeat the whole exercise on the tail.
+
+As soon as we start to write state transition rules to describe this, we
+have to decide how to express the idea of `printing a number' in our state
+transition world.  The neatest solution is to add a new component
+to the state, called the {\em output}, and model `printing a number'
+by `appending a number to the output'.  We will also add two
+new primitives, @Print@ and @Stop@.
+
+The @Stop@ primitive is easy: it makes the stack empty.
+(@tiFinal@ will be altered to stop the machine when it sees an empty stack,
+rather than giving an error, which is what it does now.)
+@Stop@ expects the dump to be empty.
+\tiruleO{
+	\tistateO{o}{a:[]}{[]}{h[a:@NPrim Stop@]}{f}
+}{
+	\tistateO{o}{[]}{[]}{h}{f}
+}
+\label{rule:stop}
+
+The @Print@ primitive evaluates its first argument to an integer,
+and attaches its value
+to the output list; then it returns its second argument as its result.
+It also expects the dump to be empty.
+The first rule applies if the first argument is already evaluated:
+\tiruleO{
+	\tistateO{o}{a:a_1:a_2:[]}{[]}
+		{h\left[\begin{array}{l}
+			a:@NPrim Print@ \\
+			a_1:@NAp@~a~b_1 \\
+			a_2:@NAp@~a_1~b_2 \\
+			b_1:@NNum@~n
+		\end{array}\right]}{f}
+}{
+	\tistateO{o \plusplus [n]}{b_2:[]}{[]}{h}{f}
+}
+\label{rule:print}
+
+@Print@ is a rather weird supercombinator,
+because it has a side-effect
+on the output $o$.  @Print@ must obviously be used with care!
+The second rule applies if @Print@'s first argument is not evaluated: it
+starts an evaluation in the usual way.
+\tiruleO{
+	\tistateO{o}{a:a_1:a_2:[]}{[]}
+		{h\left[\begin{array}{l}
+			a:@NPrim Print@ \\
+			a_1:@NAp@~a~b_1 \\
+			a_2:@NAp@~a_1~b_2 \\
+		\end{array}\right]}{f}
+}{
+	\tistateO{o}{b_1:[]}{(a_2:[]):[]}{h}{f}
+}
+\label{rule:print-eval}
+
+Now, we define the following extra functions in @extraPreludeDefs@:
+\begin{verbatim}
+	printList xs = caseList xs stop printCons
+	printCons h t = print h (printList t)
+\end{verbatim}
+where @"print"@ is bound by @primitives@ to the @Print@ primitive,
+and @"stop"@ is bound to @Stop@.
+
+Finally, we modify the @compile@ function so that the stack initially contains
+the address of the expression @(printList main)@.
+It should not take long to convince yourself that this does the right
+thing.
+
+\begin{exercise}
+Implement these changes, and test your implementation by writing a program
+which returns a list of numbers.
+\end{exercise}
+
+\section{Alternative implementations\advanced}
+
+These exercises explore some alternative implementations for things we have
+done.
+
+\subsection{An alternative representation for primitives}
+\label{sect:ti:alternative-data}
+
+Since {\em the only thing we ever
+do to a primitive is execute it}, we
+can play the following trick: instead of making @primitive@ be
+an enumeration type on which we perform case analysis, we could
+make it a {\em function\/} which takes a @tiState@ to a @tiState@, like this:
+
+M0>  primitive == tiState -> tiState
+GH0>  Type Primitive = TiState -> TiState
+
+The constructors @Add@, @Sub@ and so on have vanished altogether.
+Now the `case analysis' done by @primStep@ is rather easy:
+just apply the function!
+Here are the revised definitions for @primStep@ and @primitives@.
+
+0> primStep state prim = prim state
+0> primitives = [ ("negate", primNeg),
+0>               ("+", primArith (+)), ("-", primArith (-)),
+0>               ("*", primArith (*)), ("/", primArith (/))
+0>              ]
+
+This has a direct counterpart in real implementations: instead of
+storing a small integer tag in a @NPrim@ node to distinguish among
+primitives, we store a code pointer, and jump to it to execute the
+primitive.
+
+\begin{exercise}
+Implement and test this change.
+\end{exercise}
+
+\subsection{An alternative representation of the dump\index{dump!alternative representation}}
+
+At present we have implemented the dump as a stack of stacks, but in
+a real implementation we would doubtless build the new stack directly
+on top of the old one.  The dump would then contain offsets from the
+base of the
+spine stack, telling where one sub-stack ends and the next begins.
+
+We can model this directly in our machine with the following type
+declaration:
+
+M0> tiDump == stack num
+GH0> type TiDump = Stack Num
+
+\begin{exercise}
+Implement and test this change.  You will need to modify the equations
+that deal with beginning and ending an evaluation of an argument,
+and the definition of @tiFinal@.
+\end{exercise}
+
+\subsection{An alternative representation for data values}
+\label{sect:template:data-str-hof}
+\index{data structures!as higher-order functions}
+
+There is another way to implement booleans\index{booleans!as higher-order functions}
+which is quite instructive.
+The reduction rules given in Section~\ref{sect:templ:conditional}
+for @if@ simply select one or other of
+the second or third arguments.
+Now, suppose that instead of representing a boolean value as a structured
+data object, we represented it as a {\em function,
+which selects one or other of its arguments}.  That is, @True@ and
+@False@ are redefined like this:
+\begin{verbatim}
+	True  t f = t
+	False t f = f
+\end{verbatim}
+Now boolean operators can be defined like this:
+\begin{verbatim}
+	if = I
+	and b1 b2 t f = b1 (b2 t f) f
+	or b1 b2 t f = b1 t (b2 t f)
+	not b t f = b f t
+\end{verbatim}
+These definitions can all be included in @extraPreludeDefs@.
+Now the only primitives required are the arithmetic comparison operators!
+There is no need to define a primitive @if@, or
+to add @NData@ to the @node@ type.
+
+We can apply exactly the same trick for pairs\index{pairs}.  A pair is represented
+as a {\em function\/} which takes a single argument and applies it to the
+two components of the pair:
+\begin{verbatim}
+	pair a b f = f a b
+	casePair = I
+	fst p = p K
+	snd p = p K1
+\end{verbatim}
+The same trick works for lists\index{lists}, but now we need two `extra' arguments,
+one to use if the list is a @Cons@ cell, and the other to use if it is empty:
+\begin{verbatim}
+	cons a b cn cc = cc a b
+	nil      cn cc = cn
+	caseList = I
+\end{verbatim}
+
+\begin{exercise}
+Implement booleans, pairs and lists in this way, and measure
+their performance.
+What advantages and disadvantages
+can you see relative to the previous implementation?
+\end{exercise}
+
+\section{Garbage collection\index{garbage collection}\advanced}
+
+As execution proceeds, more and more nodes will be allocated in the
+heap, so the Miranda data structure representing the heap will become
+larger and larger.  Eventually, Miranda will run out of space.  This
+comes as no surprise, because it corresponds directly to real
+implementations.  As nodes are allocated, the heap becomes larger and
+larger, and eventually fills up.  We need to perform {\em garbage
+collection\/} to free up some space.
+
+More specifically, we need to define a function @gc@, with type
+
+M6> gc :: tiState -> tiState
+M6> gc :: TiState -> TiState
+
+whose result state behaves exactly like its input state, except that
+it has a (hopefully) smaller heap.  This smaller heap contains all the
+nodes which are accessible from the other components of the machine
+state, directly or indirectly.  @gc@ makes the heap smaller by
+calling @hFree@ on the addresses of nodes which are no longer required
+(see Appendix~\ref{sect:heap} for a description of @hFree@).
+
+The @doAdmin@ function can check the
+heap size (using @hSize@) after each step, and call the garbage collector
+if it is larger than some given size.
+
+\subsection{Mark-scan collection}\index{mark-scan collection}
+
+To begin with, we will develop a {\em mark-scan collector}.
+This works in three phases:
+\begin{enumerate}
+\item
+The first phase identifies all the {\em roots\/}; that is,
+all the heap addresses contained in the machine state.  Where can such addresses
+be lurking?  We can easily find out by looking at the types involved in
+the machine state for occurrences of @addr@.  The answer is that addresses
+can occur in the stack, the dump and the globals.  So we need the following
+functions:
+
+M6> findStackRoots  :: tiStack -> [addr]
+GH6> findStackRoots  :: TiStack -> [Addr]
+M6> findDumpRoots   :: tiDump -> [addr]
+GH6> findDumpRoots   :: TiDump -> [Addr]
+M6> findGlobalRoots :: tiGlobals -> [addr]
+GH6> findGlobalRoots :: TiGlobals -> [Addr]
+
+\item
+In the {\em mark phase}, each node whose address is in the machine
+state is {\em marked}.  When a node is marked, all its descendants
+are also marked, and so on recursively.
+The @markFrom@ function takes a heap and an address, and returns a new
+heap in which all the nodes accessible from the address have been marked.
+
+M6> markFrom :: tiHeap -> addr -> tiHeap
+GH6> markFrom :: TiHeap -> Addr -> TiHeap
+
+\item
+In the {\em scan phase}, all the nodes in the heap (whether marked or not)
+are examined.  Unmarked nodes are freed, and marked nodes are unmarked.
+
+M6> scanHeap :: tiHeap -> tiHeap
+GH6> scanHeap :: TiHeap -> TiHeap
+
+\end{enumerate}
+\begin{exercise}
+Write a definition for @gc@ in terms of @findRoots@, @markFrom@ and @scanHeap@,
+and call it appropriately from @doAdmin@.
+\end{exercise}
+\begin{exercise}
+Write a definition for @findRoots@.
+\end{exercise}
+
+Before we can implement @markFrom@ and @scanHeap@ we need to
+have a way to {\em mark\/} a node.
+In a real implementation this
+is done by using a bit in the node to indicate
+whether or not the node is marked.
+We will model this by adding a new constructor, the @node@ type, as follows:
+
+M6> node ::= NAp addr addr                       || Application
+M6>          | NSupercomb name [name] coreExpr   || Supercombinator
+M6>          | NNum num                          || Number
+M6>          | NInd addr                         || Indirection
+M6>          | NPrim name primitive              || Primitive
+M6>          | NData num [addr]                  || Tag, list of components
+M6>          | NMarked node                      || Marked node
+GH6> data Node = NAp Addr Addr                     -- Application
+GH6>           | NSupercomb Name [Name] CoreExpr   -- Supercombinator
+GH6>           | NNum Int                          -- Number
+GH6>           | NInd Addr                         -- Indirection
+GH6>           | NPrim Name Primitive              -- Primitive
+GH6>           | NData Int [Addr]                  -- Tag, list of components
+GH6>           | NMarked Node                      -- Marked node
+
+\par
+The new kind of node is an @NMarked@ node, and it contains inside it the @node@
+which was there before the marking happened.
+The @node@ inside an @NMarked@ node
+is never another @NMarked@ node.
+
+Now we are ready to define @markFrom@.
+Given an address $a$ and a heap $h$, it does the following:
+\begin{enumerate}
+\item
+It looks up $a$ in $h$, giving a node $n$.  If it is already marked, @markFrom@
+returns immediately.  This is what prevents the marking process from going
+on forever when it encounters a cyclic structure in the heap.
+\item
+It marks the node by using @hUpdate@ to replace it with $@NMarked@~n$.
+\item
+It extracts any addresses from inside $n$ (there may be zero or more
+such addresses), and calls @markFrom@ on each of them.
+\end{enumerate}
+All that remains is @scanHeap@.   It uses @hAddresses@ to extract the list of
+all the addresses used in the heap, and examines each in turn.  If the node
+to which it refers is unmarked (that is, not an @NMarked@ node), it calls
+@hFree@ to free the node.  Otherwise, it unmarks the node by
+using @hUpdate@ to replace it with the node found inside the
+@NMarked@ constructor.
+\begin{exercise}
+Write definitions for @markFrom@ and @scanHeap@.
+\end{exercise}
+
+That completes the mark-scan garbage collector.
+
+Mark-scan is not the only way to perform garbage collection, and
+we now suggest some directions for further exploration.
+A brief survey of garbage-collection techniques can be found in
+Chapter 17 of \cite{PJBook}; a more comprehensive review is \cite{Cohen}.
+
+\subsection{Eliminating indirections}
+
+\begin{figure} %\centering
+\input{gc-ind.tex}
+\caption{Eliminating indirections during garbage collection}
+\label{fig:gc-ind}
+\end{figure}
+We begin with an optimisation to the collector we have just developed.
+During evaluation we may introduce indirection nodes, and it would be nice
+to eliminate them, by readjusting pointers as suggested in
+Figure~\ref{fig:gc-ind}.
+To do this, we need to change the functionality of @markFrom@ a bit.
+It should now take an address and a heap, mark all the nodes accessible
+from the address, and return a new heap {\em together with a new address
+which should be used instead of the old one}.
+
+M7> markFrom :: tiHeap -> addr -> (tiHeap, addr)
+GH7> markFrom :: TiHeap -> Addr -> (TiHeap, Addr)
+
+In the picture, calling
+@markFrom@ with the address of node (a) should mark node (c) (but not node
+(b)), and return the address of node (c).
+
+How do we make use of the address returned by @markFrom@?
+It must be inserted in place
+of the address with which @markFrom@ was called.  The easiest way to do
+this is to merge the first two phases, so that as each root is identified
+in the machine state,
+@markFrom@ is called, and the returned address is used to replace the
+original root in the machine state.
+So we replace @findStackRoots@ and its companions with:
+
+M7> markFromStack   :: tiHeap -> tiStack   -> (tiHeap,tiStack)
+M7> markFromDump    :: tiHeap -> tiDump    -> (tiHeap,tiDump)
+M7> markFromGlobals :: tiHeap -> tiGlobals -> (tiHeap,tiGlobals)
+GH7> markFromStack   :: TiHeap -> TiStack   -> (TiHeap,TiStack)
+GH7> markFromDump    :: TiHeap -> TiDump    -> (TiHeap,TiDump)
+GH7> markFromGlobals :: TiHeap -> TiGlobals -> (TiHeap,TiGlobals)
+
+\begin{exercise}
+Implement the revised version of @markFrom@, making it `skip over'
+indirections without marking them, and update the addresses inside
+each node as it calls itself recursively.
+Then implement the other marking functions in terms of @markFrom@,
+and glue them together
+with a new version of @gc@.
+Measure the improvement, by comparing the heap sizes obtained with this
+new collector to the ones you obtained before.  (You can easily revert to
+the one before by removing the special handling of @NInd@ from
+@markFrom@.)
+\end{exercise}
+
+\subsection{Pointer reversal}\index{pointer reversal}
+
+If all the $N$ nodes in the heap happened to be linked together into a single
+long list, then @markFrom@ would call itself recursively $N$ times.
+In a real implementation this would build up a stack which is as deep as the
+heap is large.  It is very tiresome to have to allocate a stack as large
+as the heap to account for a very unlikely situation!
+
+There is a neat trick called {\em pointer reversal},
+which can eliminate the stack by linking together the
+very nodes which are being marked \cite{PointerReversal}.
+The only extra requirement placed by the algorithm is that
+marked nodes need a few extra bits of state information.  We can express
+this by expanding the @NMarked@ constructor somewhat:
+
+M8> node ::= NAp addr addr                       || Application
+M8>          | NSupercomb name [name] coreExpr   || Supercombinator
+M8>          | NNum num                          || Number
+M8>          | NInd addr                         || Indirection
+M8>          | NPrim name primitive              || Primitive
+M8>          | NData num [addr]                  || Tag, list of components
+M8>          | NMarked markState node            || Marked node
+GH8> data Node = NAp Addr Addr                     -- Application
+GH8>           | NSupercomb Name [Name] CoreExpr   -- Supercombinator
+GH8>           | NNum Int                          -- Number
+GH8>           | NInd Addr                         -- Indirection
+GH8>           | NPrim Name Primitive              -- Primitive
+GH8>           | NData Int [Addr]                  -- Tag, list of components
+GH8>           | NMarked MarkState Node            -- Marked node
+
+M8> markState ::= Done           || Marking on this node finished
+M8>               | Visits num   || Node visited n times so far
+GH8> data markState = Done         -- Marking on this node finished
+GH8>                | Visits Int   -- Node visited n times so far
+
+The meaning of the constructors for @markState@ will be explained shortly.
+
+\begin{figure} %\centering
+\input{gc}
+\caption{Marking a graph using pointer reversal}
+\label{fig:gc}
+\end{figure}
+We can describe the pointer-reversal
+algorithm with the aid of another (quite separate) state
+transition system.
+The state of the
+marking machine has three components $(f,b,h)$, the \stressD{forward pointer},
+the \stressD{backward pointer} and the heap.  Each call to @markFrom@
+initiates a new run of the machine.  When @markFrom@ is called with
+address $a$ and heap $h_{init}$ the machine is started from the state
+\[
+(a,@hNull@,h_{init})
+\]
+(@hNull@ is a distinguished value of type @addr@ which does not address any
+object in the heap, and which can be distinguished from ordinary addresses.)
+The machine terminates when it is in a state
+\[
+(f,~@hNull@,~ h[f:@NMarked Done@~n])
+\]
+that is, when $f$ points to a marked node, and $b=@hNull@$.
+(It is possible that the initial state is also a final state, if the
+node pointed to by $f$ is already marked.)
+
+We begin the transition rules by describing how the machine handles
+unmarked nodes.  @NData@ nodes will be ignored for the present.
+First, we deal with the case of applications.  When we encounter an
+unmarked application, we `go down' into its first sub-graph,
+recording the old back-pointer in the first field of the @NAp@ node.
+The new forward-pointer addresses the first sub-graph, and the
+new back-pointer addresses the application node itself.
+The state information, @Visits 1@, records the fact that the back-pointer
+is kept in the first field of the @NAp@ node.
+\gcrule{
+   \gcstate{f}{b}{h[f:@NAp@~a_1~a_2]}
+}{
+   \gcstate{a_1}{f}{h[f:@NMarked@~ (@Visits 1@)~(@NAp@~b~a_2)]}
+}
+This is illustrated in Figure~\ref{fig:gc}(a) and (b).  In this figure the
+marks are abbreviated to `@V1@' for `@Visits 1@', `@V2@' for
+`@Visits 2@' and `@D@' for `@Done@'.  Notice the way that
+a chain of reversed pointers builds up in the application nodes which
+have been visited.
+
+The next rule says that unmarked @NPrim@ nodes should be marked as completed,
+using the @NMarked Done@ constructor (Figure~\ref{fig:gc}(c)):
+\gcrule{
+   \gcstate{f}{b}{h[f:@NPrim@~p]}
+}{
+   \gcstate{f}{b}{h[f:@NMarked Done@~(@NPrim@~p)]}
+}
+@NSupercomb@ and @NNum@ nodes are treated similarly, since they
+do not contain any further addresses.
+
+So much for unmarked nodes.  When the machine finds that $f$ points to
+a marked node, it inspects the node which $b$ points to.  If it is @hNull@,
+the machine terminates.  Otherwise, it must be a
+marked @NAp@ node.  Let us deal first with the case where the
+state information is @(Visits 1)@, saying that the node has been
+visited once. We have therefore completed marking the first sub-graph
+of the @NAp@ node, and should now mark the second, which we do by making
+$f$ point to it, leaving $b$ unchanged, moving the back-pointer saved
+in the node ($b'$) from the first field to the second, and changing the state
+information (Figure~\ref{fig:gc}(d)):
+\gcrule{
+   \gcstate{f}{b}
+	{h\left[\begin{array}[c]{l}
+		f:@NMarked Done@~n \\
+		b:@NMarked@~(@Visits 1@)~(@NAp@~b'~a_2)
+		\end{array}\right]}
+}{
+  \gcstate{a_2}{b}{h[b:@NMarked@~ (@Visits 2@)~(@NAp@~f~b')]}
+}
+
+Some time later, the machine will complete marking the second sub-graph,
+in which case it can restore the node to its original form, and
+back up the chain of back-pointers one stage (Figure~\ref{fig:gc}(e)):
+\gcrule{
+   \gcstate{f}{b}
+	{h\left[\begin{array}[c]{l}
+		f:@NMarked Done@~n \\
+		b:@NMarked@~ (@Visits 2@)~ (@NAp@~a_1~b')
+		\end{array}\right]}
+}{
+  \gcstate{b}{b'}{h[b:@NMarked Done@~ (@NAp@~a_1~f)]}
+}
+
+Lastly, we deal with indirections\index{indirections}.  They are skipped over by
+changing $f$ but not $b$.  The heap is left unchanged, so the indirection itself
+is not marked.  When garbage collection is completed, all indirections will
+therefore be reclaimed.  As you can see, `shorting out' indirections during
+garbage collection is very easy with this marking algorithm.
+\gcrule{
+   \gcstate{f}{b}{h[f:@NInd@~a]}
+}{
+   \gcstate{a}{b}{h}
+}
+
+That completes the state transitions for the pointer-reversal algorithm.
+\begin{exercise}
+Add rules for the @NData@ node.
+\end{exercise}
+\begin{exercise}
+Implement the algorithm.  The main changes required are to the @node@ type
+and to the @markFrom@ function.  @scan@ needs to change in a trivial way,
+because the format of @NMarked@ constructors has changed.
+\end{exercise}
+
+\subsection{Two-space garbage collection}\index{two-space garbage collection}
+
+Another very popular way of performing garbage collection is
+to copy all the live data from one heap to another, the so-called
+two-space collector invented by \cite{Fenichel} (see also
+\cite{Baker,Cheney}). The collector works in two stages:
+\begin{enumerate}
+\item
+All the nodes pointed to by the machine state (stack, dump, etc.)
+are \stressD{evacuated} from the old heap (called \stressD{from-space}) into
+the initially empty new heap (called \stressD{to-space}).
+A node is evacuated by allocating
+a copy of it in to-space, and overwriting the from-space copy with a
+\stressD{forwarding pointer} containing the to-space address of the new
+node.
+Like @markFrom@, the
+evacuation routine returns the to-space address of the new node, which
+is used to replace the old address in the machine state.
+\item
+Then all the nodes in to-space are scanned linearly, starting at the first,
+and each is \stressD{scavenged}.
+A node $n$ is scavenged by evacuating any nodes
+to which it points, replacing their addresses in $n$ with their new
+to-space addresses.
+Scanning stops when the scanning pointer catches up with the allocation
+pointer.
+\end{enumerate}
+
+To implement this, we have to add yet another variant of the @node@ type,
+this time with an @NForward@ constructor, which contains a single adddress
+(the to-space address).  (@NMarked@ is not needed for this collector.)
+Instead of @markFromStack@ we need @evacuateStack@ with type:
+
+M9> evacuateStack :: tiHeap -> tiHeap -> tiStack -> (tiHeap, tiStack)
+GH9> evacuateStack :: TiHeap -> TiHeap -> TiStack -> (TiHeap, TiStack)
+
+\par
+The call $(@evacuateStack@~fromheap~toheap~stk)$ evacuates all the
+nodes in $fromheap$ referred to from $stk$ into $toheap$, returning
+the new $toheap$ and the new $stk$.  Similar functions are required for
+the dump and globals.
+
+Lastly, we need a function
+
+M9> scavengeHeap :: tiHeap -> tiHeap -> tiHeap
+GH9> scavengeHeap :: TiHeap -> TiHeap -> TiHeap
+
+where the call $(@scavengeHeap@~fromheap~toheap)$ scavenges nodes in
+$toheap$, evacuating when necessary nodes from $fromheap$ into $toheap$.
+
+\begin{exercise}
+Implement this garbage collector.
+\end{exercise}
+
+% end of chapter 2

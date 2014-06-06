@@ -1,0 +1,161 @@
+From: torbenm@dk.diku
+Subject: The pretty-printer in "Implementation of Functional ..."
+
+Dear David and Simon,
+ 
+Nils Andersen and I have started to use your book about implementation
+of functional programming languages in a course. While we find most of
+the programming quite elegant, we thought that the use of an
+intermediate data structure (iseqRep) in the pretty-printer to be
+inelegant. I thus tried to get rid of this by redesigning the abstract
+datastructure iseq. The result was that the new version is
+considerably shorter than the one from the book and on most examples
+2-3 times faster, also using only about half the storage of the
+original. The tests were performed using /count in Miranda version
+2.014, but I'm convinced similar speedups apply to other versions.
+ 
+The new version and a transformational development of it from the
+version in the book is shown below. We start by the version from the
+book
+ 
+ 
+>abstype iseq
+>with iNil :: iseq   || The empty iseq
+> iStr :: [char] -> iseq || Turn a string into an iseq
+> iAppend :: iseq -> iseq -> iseq || Append two iseqs
+> iNewline:: iseq   || Newline with indentation
+> iIndent :: iseq -> iseq  || Indent an iseq
+> iDisplay:: iseq -> [char] || Turn an iseq into a string
+>
+>iseq == iseqRep
+>iseqRep ::= INil | IStr [char] | IAppend iseqRep iseqRep
+>                 | IIndent iseqRep | INewline
+>iNil   = INil
+>iStr str  = IStr str
+>iAppend seq1 seq2 = IAppend seq1 seq2
+>iIndent seq  = IIndent seq
+>iNewline  = INewline
+>iDisplay seq  = flatten 0 [(seq,0)]
+>
+>flatten :: num    || Current column; 0 for first column
+>         -> [(iseqRep,num)] || Work list
+>         -> [char]  || Result
+>
+>flatten col [] = ""
+>flatten col ((INil,indent):seqs)
+> = flatten col seqs
+>flatten col ((IStr s,indent) : seqs)
+> = s ++ flatten (col+#s) seqs
+>flatten col ((IAppend seq1 seq2,indent) : seqs)
+> = flatten col ((seq1,indent) : (seq2,indent) : seqs)
+>flatten col ((IIndent seq, indent) : seqs)
+> = flatten col ((seq, col) : seqs)
+>flatten col ((INewline, indent) : seqs)
+> = "\n" ++ spaces indent ++ flatten indent seqs
+ 
+ 
+We start by separating the pattern matching on the list and iseqRep in
+flatten
+ 
+>flatten col [] = ""
+>flatten col ((seq,indent):seqs) = flatt col seq indent seqs
+>
+>flatt col INil indent seqs
+> = flatten col seqs
+>flatt col (IStr s) indent seqs
+> = s ++ flatten (col+#s) seqs
+>flatt col (IAppend seq1 seq2) indent seqs
+> = flatten col ((seq1,indent) : (seq2,indent) : seqs)
+>flatt col (IIndent seq) indent seqs
+> = flatten col ((seq, col) : seqs)
+>flatt col INewline indent seqs
+> = "\n" ++ spaces indent ++ flatten indent seqs
+ 
+We then note that since iseqRep is only decomposed in flatt, we can
+replace each constructor by a function similar to the corresponding
+equation in flatt. We can then replace a call to flatt by a
+higher-order call to an iseq.
+ 
+ 
+>flatten :: num    || Current column; 0 for first column
+>         -> [(iseqRep,num)] || Work list
+>         -> [char]  || Result
+>
+>iNil col indent seqs
+> = flatten col seqs
+>iStr str col indent seqs
+> = s ++ flatten (col+#s) seqs
+>iAppend seq1 seq2 col indent seqs
+> = flatten col ((seq1,indent) : (seq2,indent) : seqs)
+>iIndent seq col indent seqs
+> = flatten col ((seq, col) : seqs)
+>iNewline col indent seqs
+ = "\n" ++ spaces indent ++ flatten indent seqs
+>iDisplay seq
+> = flatten 0 [(seq,0)]
+>
+>flatten col [] = ""
+>flatten col ((seq,indent):seqs) = seq col indent seqs
+ 
+ 
+But we still have a data structure: the work list argument to flatten.
+We again note that this is only decomposed in one place, and replace
+the constructors by functions
+ 
+>sNil col = ""
+>sCons seq indent seqs col = seq col indent seqs
+>
+>iNil col indent seqs
+> = flatten col seqs
+>iStr str col indent seqs
+> = s ++ flatten (col+#s) seqs
+>iAppend seq1 seq2 col indent seqs
+> = flatten col (sCons seq1 indent (sCons seq2 indent seqs))
+>iIndent seq col indent seqs
+> = flatten col (sCons seq col seqs)
+>iNewline col indent seqs
+ = "\n" ++ spaces indent ++ seqs indent
+>iDisplay seq
+> = flatten 0 (sCons seq 0 sNil)
+>
+>flatten :: num    || Current column; 0 for first column
+>         -> (num -> char) || Work list as function
+>         -> [char]  || Result
+>
+>flatten col seqs = seqs col
+ 
+The simplicity of the equation for flatten allows us to replace calls
+to (flatten col seqs) by (seqs col) Similarly, we can replace calls to
+(sCons seq indent seqs col) by (seq col indent seqs). However, most
+calls to sCons don't have the col parameter, so we rearrange the
+parameters to iseq values so we can eta-reduce the col parameter. the
+final version (complete with declarations) now becomes
+ 
+>abstype iseq
+>with iNil :: iseq   || The empty iseq
+> iStr :: [char] -> iseq || Turn a string into an iseq
+> iAppend :: iseq -> iseq -> iseq || Append two iseqs
+> iNewline:: iseq   || Newline with indentation
+> iIndent :: iseq -> iseq  || Indent an iseq
+> iDisplay:: iseq -> [char] || Turn an iseq into a string
+>
+>iseq == num -> iseqs -> iseqs
+>iseqs == num -> [char]
+>
+>sNil col = ""
+>
+>iNil indent seqs  = seqs
+>iStr str indent seqs col = s ++ seqs (col+#s)
+>iAppend seq1 seq2 indent seqs = seq1 indent (seq2 indent seqs)
+>iIndent seq indent seqs col = seq col seqs col
+>iNewline indent seqs col = "\n" ++ spaces indent ++ seqs indent
+>iDisplay seq = seq 0 sNil 0
+ 
+Note that I have also eta-reduced the col parameter away from the
+equations for iNil and iAppend.
+ 
+I hope this development is of interest to you. I plan to write a paper
+about the transformation technique I have used in this example. I
+believe it can be used in many other cases.
+ 
+ Torben Mogensen (torbenm@diku.dk)

@@ -1,0 +1,20 @@
+\title{Implementing Functional Languages: \\ 
+       a tutorial}
+\author{Simon L Peyton Jones \\ 
+	Department of Computing Science, University of Glasgow
+\and
+	and David R Lester \\
+	 Department of Computer Science, University of Manchester\\
+	 \copyright{} 1991}
+
+\maketitle
+\clearpage
+\begin{figure}[t]
+\parbox[t]{5in}{%
+This book is dedicated to the memory of our friend and colleague
+Jon Salkild (1963-1991).
+}
+\end{figure}
+\clearpage
+\setcounter{tocdepth}{1}
+\tableofcontents

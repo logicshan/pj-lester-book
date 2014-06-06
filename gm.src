@@ -1,0 +1,3775 @@
+% $Date: 92/01/13 16:22:55 $
+% $Revision: 1.21 $
+% (c) 1991 Simon Peyton Jones & David Lester.
+% Note: some definitions for functions have been indented diffrently
+%       from the original file, because otherwise gofer would reject them.
+
+H3-7> {-# LANGUAGE NPlusKPatterns #-}
+H1> module Gm1 where
+H2> module Gm2 where
+H3> module Gm3 where
+H4> module Gm4 where
+H5> module Gm5 where
+H6> module Gm6 where
+H7> module Gm7 where
+H> import Language
+H> import Utils
+
+\chapter{The G-machine\index{G-machine}}
+\label{sect:g-machine}
+
+In this chapter we introduce our first compiler-based implementation,
+the G-machine, which was developed at the Chalmers
+Institute of Technology, G\"oteborg, Sweden, by Augustsson and
+Johnsson. The material in this chapter is based on their series of
+papers \cite{Augustsson:LFP84,Johnsson:CC84} culminating in their Ph.D.
+theses \cite{Augustsson:thesis87,Johnsson:thesis87}.
+
+\section{Introduction to the G-machine}
+
+The fundamental operation of the template instantiation machine was to
+construct an instance of a supercombinator body, implemented by the
+@instantiate@ function. This is a rather slow operation, because
+@instantiate@ must recursively traverse the template {\em each time an
+instantiation is performed}. When we think of the machine instructions
+that are executed by @instantiate@, we see that they will be of two
+kinds: those concerned with traversing the template, and those
+concerned with actually constructing the instance.
+
+The `Big Idea' of the G-machine\index{G-machine!the Big Idea}, and other
+compiled implementations, is this:
+\begin{important}
+Before running the program, translate each supercombinator body to a
+sequence of instructions which, when executed, will construct an
+instance of the supercombinator body.
+\end{important}
+
+Executing this code should be faster than calling an instantiation
+function, because all the instructions are concerned with constructing
+the instance.  There are no instructions required to traverse the
+template, because all that has been done during the translation
+process. Running a program is thereby split into two stages. In the
+first stage a compiler is used to produce some intermediate form of the
+program; this is referred to as {\em compile-time}\index{compile-time}.
+ In the second stage the intermediate form is executed; this is called
+{\em run-time}\index{run-time}.
+
+Since all we ever do to a supercombinator is to instantiate it, we can
+discard the original supercombinators once the translation is done,
+keeping only the compiled code.
+
+In principle, then, we use a {\em G-machine compiler\/}\index{G-machine
+compiler} to turn a program in our source language into a sequence of
+{\em machine language instructions}\index{machine language
+instructions}. Because we may wish to implement our language on many
+different pieces of hardware (68000 based, or VAX, etc.) it is
+useful to have an {\em abstract machine}\index{abstract machine}. A
+good abstract machine has two properties: firstly, it can be easily
+translated into any concrete machine code (for example 68000
+assembler); secondly, it is easy to generate the abstract machine code
+from the source.
+
+Notice that we are faced with a trade-off here. We can ideally satisfy
+the first property (easy concrete code generation) by making the
+abstract machine the {\em same\/} as the real machine. But this makes
+the second property much harder to fulfil. An abstract machine is
+therefore a stepping-stone between the source language and a
+particular machine code.
+
+\subsection{An example}
+
+Here is a small example of the G-machine compiler in
+action\index{Example execution!of G-machine}. Consider the function
+\begin{verbatim}
+	f g x = K (g x)
+\end{verbatim}
+This would be compiled to the sequence of G-code instructions:
+\begin{verbatim}
+	Push 1
+	Push 1
+	Mkap
+	Pushglobal K
+	Mkap
+	Slide 3
+	Unwind
+\end{verbatim}
+In Figure~\ref{gm:fg:1example}, we show how this code will execute. On
+the left-hand side of each diagram is the stack, which grows
+downwards. The remainder of each diagram is the heap. The application
+nodes are represented by an @@ character, expressions are labelled
+with lower-case letters, and supercombinators are labelled with
+upper-case letters.
+%\begin{figure}[htbp]
+\begin{figure} % \raggedright
+\input{gm_ex}
+
+\vspace{0.25in}
+
+\input{gm_exa}
+\caption{Execution of code for the @f@ supercombinator}\label{gm:fg:1example}
+\end{figure}
+
+In Figure~\ref{gm:fg:1example}, diagram (a), we see the state
+of the machine before executing the sequence of instructions for @f@.
+The spine has been unwound, just as it was in the template machine.
+The top two items on the stack are pointers to the application nodes,
+whose right-hand parts are the expressions to be bound for @g@ and
+@x@.
+
+The @Push@ instruction uses addressing relative to the top of the
+stack. Ignoring the pointer to the supercombinator node @f@, the first
+stack item is numbered @0@, the next is numbered @1@ and so on. The
+next diagram (b) shows the changed stack, after executing a @Push 1@
+instruction.  This pushes a pointer to the expression @x@ onto the
+stack, @x@ being two stack items down the stack. After another @Push 1@
+we have a pointer to @g@ on top of the stack; again this is two
+stack items down the stack, because the previous instruction pushed a
+new pointer onto the stack.  The new diagram is (c).
+
+Diagram (d) shows what happens when a @Mkap@ instruction is
+executed.  It takes two pointers from the stack and makes an
+application node from them; leaving a pointer to the result on the
+stack. In diagram (e) we execute a @Pushglobal K@ instruction,
+with the effect of pushing a pointer to the @K@ supercombinator.
+Another @Mkap@ instruction completes the instantiation of the body of
+@f@, as shown in diagram (f).
+
+We can now replace the original expression, @f g x@, with the newly
+instantiated body: @K (g x)@. In the first version of the G-machine
+-- which is not lazy -- we simply slide the body down three places on the
+stack, discarding the three pointers that were there. This is achieved
+by using a @Slide 3@ instruction, as shown in diagram (g). The final
+@Unwind@ instruction
+will cause the machine to continue to evaluate.
+
+This concludes a brief overview of the execution of the G-machine.
+
+\subsection{Further optimisations}
+
+A modest performance gain can be achieved by eliminating the
+interpretive overhead of traversing the template\index{interpretive
+overhead!template traversal}, as we have discussed.  However, it turns
+out that compilation also opens the door to a whole host of short-cuts
+and optimisations which are simply not available to the
+template instantiation machine. For example, consider the following
+definition:
+\begin{verbatim}
+	f x = x + x
+\end{verbatim}
+The template machine would evaluate @x@ twice; on the second occasion
+it would of course find that it was already evaluated.  A compiled
+implementation can spot at compile-time that @x@ will already be
+evaluated, and omit the evaluation step.
+
+\section{Code sequences for building templates}
+\label{background-gm}
+
+We recall that the template instantiator operates in the following
+way:
+\begin{itemize}
+
+\item The machine has {\em terminated\/}\index{termination condition!of
+G-machine} when the single item on top of the stack is a pointer to an
+integer.
+
+\item If this is not the case then we {\em unwind\/}\index{unwind!in
+G-machine} any application nodes we come across until we reach a
+supercombinator node. We then {\em instantiate\/}\index{instantiation!in
+G-machine} a copy of the supercombinator body, making substitutions
+for its arguments.
+
+\end{itemize}
+
+At the heart of the Mark~1 template machine are the two functions
+@scStep@~and~@instantiate@, which are defined on pages
+\pageref{page:sc-step}~and~\pageref{page:instantiate}. If we take a
+look at the definitions of @scStep@ and @instantiate@, we can give the
+following description to the operation of instantiating a
+supercombinator:
+
+\begin{enumerate}
+
+\item Construct a {\em local environment\/}\index{local environment!of
+G-machine} of variable names to addresses in the heap.
+
+\item Using this local environment, make an instance of the
+supercombinator body in the heap.  Variables are not copied; instead
+the corresponding address is used.
+
+\item Remove the pointers to the application nodes and the
+supercombinator node from the stack.
+
+\item Push the address of the newly created instance of the
+supercombinator onto the stack.
+
+\end{enumerate}
+
+In the template instantiator, making an instance of a supercombinator
+involves traversing the tree structure of the expression which is the
+body of the supercombinator.  Because expressions are defined
+recursively, the tree-traversal function @instantiate@ is defined
+recursively. For example, look at the definition of @instantiate@ -- on
+page~\pageref{page:instantiate} -- for the case of @EAp@~@e1@~@e2@. First
+we call @instantiate@ for @e1@ and then for @e2@, holding on to the
+addresses of the graph for each sub-expression.  Finally we combine
+the two addresses by building an application node in the graph.
+
+We would like to compile a {\em linear sequence of
+instructions\/}\index{linear sequence of instructions} to perform the
+operation of instantiating an expression.
+
+\subsection{Postfix evaluation of arithmetic\index{postfix
+evalution!of arithmetic expressions}}
+
+The desire to construct a linear sequence of instructions to
+instantiate an expression is reminiscent of the postfix evaluation of
+arithmetic expressions. We explore this analogy further before
+returning to the G-machine.
+
+The language of arithmetic expressions consists of: numbers, addition
+and multiplication.  We can represent this language as the type
+@aExpr@.
+
+M0> aExpr ::= Num num | Plus aExpr aExpr | Mult aExpr aExpr
+GH0> data AExpr 	= Num Int
+GH0>		| Plus AExpr AExpr
+GH0>		| Mult AExpr AExpr
+
+It is intended that the language should have an `obvious' meaning;
+we can give this using the function @aInterpret@.
+
+M0> aInterpret :: aExpr -> num
+GH0> aInterpret :: AExpr -> Int
+0> aInterpret (Num n)      = n
+0> aInterpret (Plus e1 e2) = aInterpret e1 + aInterpret e2
+0> aInterpret (Mult e1 e2) = aInterpret e1 * aInterpret e2
+
+Alternatively, we can compile the expression into a postfix sequence
+of operators (or instructions). To evaluate the expression we use the
+compiled operators and a stack of values. For example, the arithmetic
+expression $2+3\times 4$ would be represented as the sequence
+\[
+[@INum@~2,\,@INum@~3,\,@INum@~4,\,@IMult@,\,@IPlus@]
+\]
+We can give the instructions for our postfix machine as the type
+@aInstruction@.
+
+M0> aInstruction ::= INum num | IPlus | IMult
+GH0> data AInstruction 	= INum Int
+GH0>			| IPlus
+GH0>			| IMult
+
+\par
+The state of the evaluator is a pair, which is a sequence of operators
+and a stack of numbers. The meaning of a code sequence is then given
+in the following transition rules.
+
+\aerule{\aestate{[]}{[n]}}{\aestate{{ }}{n}}
+\aerule{\aestate{@INum@~n:i}{ns}}{\aestate{i}{n:ns}}
+\aerule{\aestate{@IPlus@:i}{n_0:n_1:ns}}{\aestate{i}{(n_1+n_0):ns}}
+\aerule{\aestate{@IMult@~:i}{n_0:n_1:ns}}{\aestate{i}{(n_1\times n_0):ns}}
+
+Translating these transition rules into Miranda gives:
+
+M0> aEval :: ([aInstruction], [num]) -> num
+GH0> aEval :: ([AInstruction], [Int]) -> Int
+0> aEval ([],        [n])     = n
+0> aEval (INum n:is, s)       = aEval (is, n:    s)
+0> aEval (IPlus: is, n0:n1:s) = aEval (is, n1+n0:s)
+0> aEval (IMult: is, n0:n1:s) = aEval (is, n1*n0:s)
+
+\par
+To generate the sequence of postfix code for an expression we must
+define a compiler. This takes an expression and delivers a sequence of
+instructions, which when executed will compute the value of the
+expression.
+
+M0> aCompile :: aExpr -> [aInstruction]
+GH0> aCompile :: AExpr -> [AInstruction]
+0> aCompile (Num n)      = [INum n]
+0> aCompile (Plus e1 e2) = aCompile e1 ++ aCompile e2 ++ [IPlus]
+0> aCompile (Mult e1 e2) = aCompile e1 ++ aCompile e2 ++ [IMult]
+
+The key idea from this is given by the type of the @aCompile@ function.
+It returns a list of instructions.
+
+\begin{important}
+The postfix representation of expressions is a way of {\em
+flattening}\index{flattening, of a tree} or {\em
+linearising}\index{linearising, of a tree} an expression tree, so that
+the expression can be represented by a flat sequence of operators.
+\end{important}
+
+\begin{exercise}\label{gm:X:structural-induction}
+Using structural induction, or otherwise, prove that the postfix evaluation
+of arithmetic expressions results in the same answer as the tree evaluation
+of expressions. That is: prove that for all expressions @e@ of type @aExpr@,
+\[
+@aInterpret@~@e@ = @aEval@~(@aCompile@~@e@,~[])
+\]
+This is an example of a {\em congruence proof}\index{congruence proof, of compiler correctness}.
+\end{exercise}
+
+\begin{exercise}\label{gm:X:structural-induction-hard}
+Extend the functions @aInterpret@, @aCompile@ and @aEval@ to handle
+@let@ expressions. Prove that for all expressions in @e@ of type @aExpr@, these
+new functions satisfy the relation:
+\[
+@aInterpret@~@e@ = @aEval@~(@aCompile@~@e@,~[])
+\]
+Can you extend the language to even more complicated expressions,
+e.g. @letrec@ expressions? Can you prove that you have correctly
+implemented these extensions?
+\end{exercise}
+
+\subsection{Using postfix code to construct graphs\index{postfix
+code!to construct graphs}}
+
+We can use the same technique to create an instance of a
+supercombinator body. In this case the `values' on the stack will be
+addresses of parts of the expression being instantiated.
+
+The operations of the template construction instructions will be
+different from those we saw in the arithmetic example above, in that
+the instructions generally have the side-effect of allocating nodes in
+the heap. As an example, consider introducing an @Mkap@ instruction.
+This instruction makes an application node, in the heap, from the top
+two addresses on the stack. It leaves a pointer to this new node on
+the stack upon completion.
+
+There is no reason to invent a new evaluation stack of addresses, as
+our template instantiation machine already has such a stack. However,
+there is an important point to remember if we do make use of this
+stack:
+\begin{important}
+The map of the {\em stack locations\/}\index{stack locations!in G-machine}
+corresponding to variable names will change as we pop and push objects
+from the stack. We must therefore keep track of this when we are
+compiling expressions.
+\end{important}
+Our access to items in the stack is relative to the top of the stack.
+So, if an item is added, the offset to reach that item is increased by
+one; similarly, when an item is popped, the offset is decreased by one.
+
+\subsection{What happens after an instantiation has been made?}
+
+Once the instantiation of the supercombinator body has been made we
+must tidy up the stack, and arrange the continuation of the evaluation
+process. On completing the evaluation of the postfix sequence for a
+supercombinator with $n$ arguments, the stack will have the following
+form:
+\begin{itemize}
+
+\item On top there will be the address in heap of the newly
+instantiated body, @e@.
+
+\item Next there are the $n+1$ pointers. From these we can access the
+arguments used in the instantiation process.
+
+\item The last of the $n+1$ pointers points to the root of the
+expression we have just instantiated.
+
+\end{itemize}
+This is shown in Figure~\ref{gm:fg:stack}.
+\begin{figure} %\centering
+\input{gm_stack}
+\caption{The stack layout for the Mark~1 machine\index{G-machine stack
+layout!Mark 1}}\label{gm:fg:stack} \end{figure}
+
+We must replace the redex with the newly instantiated body, and pop
+off $n$ items from the stack, using the @Slide@ instruction. To find
+the next supercombinator we must now start unwinding again, using the
+@Unwind@ instruction. By adding operations to do the tidying and
+unwinding to the postfix operator sequence, we have transformed the
+template instantiator into our Mark~1 G-machine.
+
+The code for the function @f x1 ... xn = e@ is:
+\begin{verbatim}
+	<code to construct an instance of e>
+	Slide n+1
+	Unwind
+\end{verbatim}
+
+\section{Mark 1: A minimal G-machine\index{G-machine!Mark 1}}
+\label{minimal-gm}
+
+We now present the code for a complete G-machine and its compiler. It
+does not perform updates (which are introduced in
+Section~\ref{gm:sc:mark2}) or arithmetic (which is introduced in
+Section~\ref{gm:sc:primitives}).
+
+\subsection{Overall structure\index{G-machine!toplevel}}
+
+At the top level the G-machine is very similar to the template instantiator;
+as usual the whole system is knitted together with a @run@ function.
+
+M> run :: [char] -> [char]
+M> run = showResults . eval . compile . parse
+GH> -- The function run is already defined in gofers standard.prelude
+GH> runProg :: [Char] -> [Char]
+GH> runProg = showResults . eval . compile . parse
+
+
+The parser data structures and functions are included because we will
+need access to them.
+
+M> %include "language" || parser data types
+GH> -- :a language.lhs -- parser data types
+
+\subsection{Data type definitions}
+
+Fundamental to graph reduction implementation techniques is the graph.
+We use the @heap@ data type, amongst others, from the utilities
+provided in Appendix~\ref{sect:utils}.
+
+M> %include "utils" || heap data type and other library functions
+GH> -- :a util.lhs -- heap data type and other library functions
+
+The Mark~1 G-machine uses the five-tuple, @gmState@, as its state. A
+@gmState@ holds all the information that we need during the execution
+of the compiled program.
+
+M1-3> gmState == (gmCode,            || Current instruction stream
+M1-3>             gmStack,           || Current stack
+M1-3>             gmHeap,            || Heap of nodes
+M1-3>             gmGlobals,         || Global addresses in heap
+M1-3>             gmStats)           || Statistics
+GH1-3> type GmState 
+GH1-3> 	= (GmCode,	-- Current instruction stream
+GH1-3> 	GmStack,	-- Current stack
+GH1-3> 	GmHeap,		-- Heap of nodes
+GH1-3> 	GmGlobals,	-- Global addresses in heap
+GH1-3> 	GmStats)	-- Statistics
+
+In describing the G-machine, we will make use of state {\em access
+functions\/}\index{access functions} to access the components of a
+state. The advantage of this approach is that when we modify the state
+to accommodate new components, we may reuse most of the original code
+we have written. We will use the prefix @get@ to denote an access
+function that gets a component from a state, and the prefix @put@ to
+replace a component in a state.
+
+We consider the type definitions of each of the five components of the
+state, and their access functions, in turn.
+
+\begin{itemize}
+\item The instruction stream is of type @gmCode@ and is simply a list
+of @instruction@s.
+
+M> gmCode == [instruction]
+GH> type GmCode = [Instruction]
+
+To get convenient access to the code, when the state is later
+augmented with extra components, we define two functions: @getCode@ and
+@putCode@.
+
+M> getCode :: gmState -> gmCode
+GH> getCode :: GmState -> GmCode
+1-3> getCode (i, stack, heap, globals, stats) = i
+
+M> putCode :: gmCode -> gmState -> gmState
+GH> putCode :: GmCode -> GmState -> GmState
+1-3> putCode i' (i, stack, heap, globals, stats)
+1-3> 	= (i', stack, heap, globals, stats)
+
+\par
+There are only six instructions initially. We will describe these in
+more detail in subsection~\ref{gm:ss:eval1}.
+
+M1> instruction ::= Unwind
+M1>                 | Pushglobal name
+M1>                 | Pushint num
+M1>                 | Push num
+M1>                 | Mkap
+M1>                 | Slide num
+GH1> data Instruction 
+GH1>     = Unwind
+GH1>     | Pushglobal Name
+GH1>     | Pushint Int
+GH1>     | Push Int
+GH1>     | Mkap
+GH1>     | Slide Int
+GH1> instance Eq Instruction 
+GH1>     where
+GH1>     Unwind          == Unwind               = True
+GH1>     Pushglobal a    == Pushglobal b         = a == b
+GH1>     Pushint a       == Pushint b            = a == b
+GH1>     Push a          == Push b               = a == b
+GH1>     Mkap            == Mkap                 = True
+GH1>     Slide a         == Slide b              = a == b
+GH1>     _               == _                    = False
+
+\item The G-machine stack @gmStack@ is a list of addresses in the heap.
+
+M> gmStack == [addr]
+GH> type GmStack = [Addr]
+
+To get convenient access to the stack, when the state is later
+augmented with extra components, we define two functions @getStack@ and
+@putStack@
+
+M> getStack :: gmState -> gmStack
+GH> getStack :: GmState -> GmStack
+1-3> getStack (i, stack, heap, globals, stats) = stack
+
+M> putStack :: gmStack -> gmState -> gmState
+GH> putStack :: GmStack -> GmState -> GmState
+1-3> putStack stack' (i, stack, heap, globals, stats)
+1-3>	= (i, stack', heap, globals, stats)
+
+\item Just as we did in the case of the template instantiator, we use
+the heap data structure from @utils@ to implement heaps.
+
+M> gmHeap == heap node
+GH> type GmHeap = Heap Node
+
+Again, to access this component of the state we define access
+functions.
+
+M> getHeap :: gmState -> gmHeap
+GH> getHeap :: GmState -> GmHeap
+1-3> getHeap (i, stack, heap, globals, stats) = heap
+
+M> putHeap :: gmHeap -> gmState -> gmState
+GH> putHeap :: GmHeap -> GmState -> GmState
+1-3> putHeap heap' (i, stack, heap, globals, stats)
+1-3> 	= (i, stack, heap', globals, stats)
+
+In the minimal G-machine there are only three types of nodes: numbers,
+@NNum@; applications, @NAp@; and globals, @NGlobal@.
+
+M1> node ::= NNum num             || Numbers
+M1>          | NAp addr addr      || Applications
+M1>          | NGlobal num gmCode || Globals
+GH1> data Node 
+GH1>	= NNum Int		-- Numbers
+GH1>	| NAp Addr Addr		-- Applications
+GH1>	| NGlobal Int GmCode 	-- Globals
+
+Number nodes contain the relevant number; application nodes apply the
+function at the first address to the expression at the second address.
+The @NGlobal@ node contains the number of arguments that the global
+expects and the code sequence to be executed when the global has
+enough arguments. This replaces the @NSupercomb@ nodes of the template
+instantiator, which held a template instead of the arity and code.
+
+\item Because we will later be making a lazy implementation it is
+important that there is only one node for each global. The address of
+a global can be determined by looking up its value in the association
+list @gmGlobals@. This corresponds to the @tiGlobals@ component
+of the template machine.
+
+M> gmGlobals == assoc name addr
+GH> type GmGlobals = ASSOC Name Addr
+
+The access function we use is @getGlobals@; in the Mark~1 machine, this
+component is constant so we do not need a corresponding put function.
+
+M> getGlobals :: gmState -> gmGlobals
+GH> getGlobals :: GmState -> GmGlobals
+1-3> getGlobals (i, stack, heap, globals, stats) = globals
+
+\item The statistics component of the state is implemented as an
+abstract data type.
+
+M> abstype gmStats
+M> with  statInitial  :: gmStats
+M>       statIncSteps :: gmStats -> gmStats
+M>       statGetSteps :: gmStats -> num
+GH> statInitial  :: GmStats
+GH> statIncSteps :: GmStats -> GmStats
+GH> statGetSteps :: GmStats -> Int
+
+The implementation of @gmStats@ is now given.
+
+M> gmStats == num
+GH> type GmStats = Int
+> statInitial    = 0
+> statIncSteps s = s+1
+> statGetSteps s = s
+
+To access this component we define @getStats@ and @putStats@:
+
+M> getStats :: gmState -> gmStats
+GH> getStats :: GmState -> GmStats
+1-3> getStats (i, stack, heap, globals, stats) = stats
+
+M> putStats :: gmStats -> gmState -> gmState
+GH> putStats :: GmStats -> GmState -> GmState
+1-3> putStats stats' (i, stack, heap, globals, stats)
+1-3> 	= (i, stack, heap, globals, stats')
+
+\end{itemize}
+
+\subsection{The evaluator\index{G-machine!evaluator}}
+\label{gm:ss:eval1}
+
+The G-machine evaluator, @eval@, is defined to produce a list of
+states.  The first one is the one constructed by the compiler. If
+there is a last state, then the result of the evaluation will be on
+the top of the stack component of the last state.
+
+M> eval :: gmState -> [gmState]
+GH> eval :: GmState -> [GmState]
+> eval state = state: restStates
+>              where
+M>              restStates = [],             gmFinal state
+M>                         = eval nextState, otherwise
+GH>              restStates | gmFinal state	= []
+GH>                         | otherwise		= eval nextState
+>              nextState  = doAdmin (step state)
+
+The function @doAdmin@ uses @statIncSteps@ to modify the statistics
+component of the state.
+
+M> doAdmin :: gmState -> gmState
+GH> doAdmin :: GmState -> GmState
+> doAdmin s = putStats (statIncSteps (getStats s)) s
+
+The important parts of the evaluator are the functions @gmFinal@ and
+@step@ which we will now look at.
+
+\subsubsection{Testing for a final state\index{termination
+condition!in G-machine}}
+
+The G-machine interpreter has finished when the code sequence that it
+is executing is empty. We express this condition in the @gmFinal@
+function.
+
+M> gmFinal :: gmState -> bool
+M> gmFinal s = getCode s = []
+GH> gmFinal :: GmState -> Bool
+GH> gmFinal s = case (getCode s) of
+GH>                    []        -> True
+GH>                    otherwise -> False
+
+\subsubsection{Taking a step}
+
+The @step@ function is defined so that it makes a state transition
+based on the instruction it is executing.
+
+M> step :: gmState -> gmState
+GH> step :: GmState -> GmState
+1-6> step state = dispatch i (putCode is state)
+1-6>              where (i:is) = getCode state
+
+\par
+We @dispatch@ on the current instruction @i@ and replace the current
+code sequence with the code sequence @is@; this corresponds to
+advancing the program counter in a real machine.
+
+M1> dispatch :: instruction -> gmState -> gmState
+GH1> dispatch :: Instruction -> GmState -> GmState
+1> dispatch (Pushglobal f) = pushglobal f
+1> dispatch (Pushint n)    = pushint n
+1> dispatch Mkap           = mkap
+1> dispatch (Push n)       = push n
+1> dispatch (Slide n)      = slide n
+1> dispatch Unwind         = unwind
+
+As we can see, the @dispatch@ function simply selects a state
+transition to execute.
+
+Let us begin by looking at the transition rules for the postfix
+instructions. There will be one for each syntactic object in
+@instruction@. We begin with the @Pushglobal@ instruction, which uses the
+@globals@ component of the state to find the unique @NGlobal@ node in the
+@heap@ that holds the global $f$. If it cannot find one, it prints a
+suitable error message.
+
+\gmrule%
+{\gmstate{@Pushglobal@\ f:i}{s}{h}{m[f:a]}}%
+{\gmstate{i}{a:s}{h}{m}}
+
+We implement this rule using the @pushglobal@ function.
+
+M> pushglobal :: name -> gmState -> gmState
+GH> pushglobal :: Name -> GmState -> GmState
+> pushglobal f state
+> 	= putStack (a: getStack state) state
+>   	where a = aLookup (getGlobals state) f (error ("Undeclared global " ++ f))
+
+\par
+The remaining transitions are for constructing the body of a
+supercombinator. The transition for @Pushint@ places an integer node
+into the heap.
+
+\gmrule%
+{\gmstate{@Pushint@\ n:i}{s}{h}{m}}%
+{\gmstate{i}{a:s}{h[a:@NNum@\ n]}{m}}
+
+The corresponding function is @pushint@.
+The number is placed in the new heap @heap'@ with address @a@. We then
+place the heap and stack back into the state.
+
+M> pushint :: num -> gmState -> gmState
+GH> pushint :: Int -> GmState -> GmState
+> pushint n state
+> 	= putHeap heap' (putStack (a: getStack state) state)
+>   	where (heap', a) = hAlloc (getHeap state) (NNum n)
+
+\par
+The @Mkap@ instruction uses the two addresses on the top of the stack
+to construct an application node in the heap. It has the following
+transition rule.
+
+\gmrule%
+{\gmstate{@Mkap@:i}{a_1:a_2:s}{h}{m}}%
+{\gmstate{i}{a:s}{h[a: @NAp@\ a_1\  a_2]}{m}}
+
+This transition becomes @mkap@. Again @heap'@ and @a@ are respectively
+the new heap and the address of the new node.
+
+M> mkap :: gmState -> gmState
+GH> mkap :: GmState -> GmState
+> mkap state
+> 	= putHeap heap' (putStack (a:as') state)
+M>   	where (heap', a)  = hAlloc (getHeap state) (NAp a1 a2)
+M>         	(a1:a2:as') = getStack state
+GH>       where (heap', a)  = hAlloc (getHeap state) (NAp a1 a2)
+GH>             (a1:a2:as') = getStack state
+
+\par
+The @Push@ instruction is used to take a copy of an argument which was
+passed to a function. To do this it has to `look through' the
+application node which is pointed to from the stack. We must also
+remember to skip over the supercombinator node which is on the stack.
+
+\gmrule%
+{\gmstate{@Push@\ n:i}{a_0:\ldots:a_{n+1}:s}{h[a_{n+1}:@NAp@\ a_n \ a'_n]}{m}}%
+{\gmstate{i}{a'_n:a_0:\ldots:a_{n+1}:s}{h}{m}}
+
+M1-2> push :: num -> gmState -> gmState
+GH1-2> push :: Int -> GmState -> GmState
+1-2> push n state
+1-2> 	= putStack (a:as) state
+1-2>   	where 	as = getStack state
+1-2>         	a  = getArg (hLookup (getHeap state) (as !! (n+1)))
+
+This uses the auxiliary function @getArg@ to select the required
+expression from an application node.
+
+M> getArg :: node -> addr
+GH> getArg :: Node -> Addr
+> getArg (NAp a1 a2) = a2
+
+\begin{important}
+Because of the stack structure we have changed the addressing mode of
+the @Push@ instruction from that used in \cite{PJBook}.
+\end{important}
+
+Next, the tidying up of the stack, which occurs after a supercombinator
+has been instantiated and before continuing unwinding, is performed by
+the @Slide@ instruction.
+
+\gmrule%
+{\gmstate{@Slide@\ n:i}{a_0:\ldots:a_n:s}{h}{m}}%
+{\gmstate{i}{a_0:s}{h}{m}}
+
+M> slide :: num -> gmState -> gmState
+GH> slide :: Int -> GmState -> GmState
+> slide n state
+> 	= putStack (a: drop n as) state
+>   	where (a:as) = getStack state
+
+\par
+@Unwind@ is the most complex instruction because it replaces the outer
+loop of our template instantiator. The @Unwind@ instruction is always
+the last instruction of a sequence, as we shall see in the next
+section. The @newState@ constructed depends on the item on top of the
+stack; this depends on the transition rule that is fired, which also
+depends on the item on top of the stack.
+
+M1> unwind :: gmState -> gmState
+GH1> unwind :: GmState -> GmState
+1> unwind state
+1> 	= newState (hLookup heap a)
+1>   	where
+1>   		(a:as) = getStack state
+1>   		heap   = getHeap state
+
+\par
+We first consider the case where there is a number on top of the
+stack. In this case, we are finished; the G-machine has terminated,
+and we place $[]$ in the code component to signify this fact.
+
+\gmrule%
+{\gmstate{[@Unwind@]}{a:s}{h[a: @NNum@\  n]}{m}}%
+{\gmstate{[]}{a:s}{h}{m}}
+
+1>   		newState (NNum n)      = state
+
+\par
+If there is an application node on top of the stack then we must
+continue to unwind from the next node.
+
+\gmrule%
+{\gmstate{[@Unwind@]}{a:s}{h[a: @NAp@\  a_1\  a_2]}{m}}%
+{\gmstate{[@Unwind@]}{a_1:a:s}{h}{m}}
+
+1>   		newState (NAp a1 a2)   = putCode [Unwind] (putStack (a1:a:as) state)
+
+\par
+The most complicated rule occurs when there is a global node on top of
+the stack. There are two cases to consider, depending on whether there are
+enough arguments to reduce the supercombinator application.
+
+Firstly, if there are not enough arguments to reduce the
+supercombinator application then the program was ill-typed. We will
+ignore this case for the Mark~1 G-machine. Alternatively, when there
+are enough arguments, it is possible to reduce the supercombinator, by
+`jumping to' the code for the supercombinator. In the transition
+rule this is expressed by moving the supercombinator code into the
+code component of the machine.
+
+\gmrule%
+{\gmstate{[@Unwind@]}{a_0:\ldots:a_n:s}%
+{h[a_0  :  @NGlobal@\ n\  c]}{m}}%
+{\gmstate{c}{a_0:\ldots:a_n:s}{h}{m}}
+
+M1>		newState (NGlobal n c) 	= error "Unwinding with too few arguments",
+M1>                                                        #as < n
+M1>                          = putCode c state, otherwise
+GH1>  	          newState (NGlobal n c) 
+GH1>  		         | length as < n	= error "Unwinding with too few arguments"
+GH1> 		         | otherwise	= putCode c state
+
+We have now seen how the instructions are defined, but we have not
+seen how to generate the postfix sequences of operators, or
+instruction sequences as we shall refer to them from now on. This is
+the subject of the next subsection.
+
+\subsection{Compiling a program\index{G-machine!compiler}}
+\label{gm:ss:compile}
+
+We describe the compiler using a set of {\em compilation
+schemes}\index{compilation schemes!in G-machine}.  Each
+supercombinator definition is compiled using the compilation scheme
+\tSC{}.
+The compiled code generated for each supercombinator is defined in
+Figure~\ref{gm:fg:schemes1}. Corresponding to the compilation schemes
+\tSC{}, \tR{} and \tC{} are {\em compiler functions\/}\index{compiler
+functions!in G-machine} @compileSc@, @compileR@ and @compileC@. We
+consider each of these in turn.
+\begin{figure*} %\centering
+$\begin{array}{|rcll|}
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\SC{d}$ is the G-machine code for the supercombinator definition $d$.}}\\
+&&&\\
+\multicolumn{4}{|l|}{\SC{f\ x_1\ \ldots\ x_n\ =\ e}
+	\: = \: \R{e}\ [x_1\mapsto 0,\,\ldots,\,x_n\mapsto n-1]\ n}\\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\R{e}~\rho~d$ generates code which instantiates the expression $e$ in
+environment $\rho$, for a supercombinator of arity $d$, and then proceeds
+to unwind the resulting stack.}}\\
+&&&\\
+\R{e}\ \rho\ d  & = & \C{e}\ \rho \append [@Slide@\ d+1,\, @Unwind@] & \\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\C{e}~\rho$ generates code which constructs the graph of $e$ in environment
+$\rho$, leaving a pointer to it on top of the stack.}}\\
+&&&\\
+\C{f}\ \rho     & = & [@Pushglobal@\ f] &
+		\tr{where $f$ is a supercombinator} \\
+%
+\C{x}\ \rho     & = & [@Push@\ (\rho\ x)] &
+			\tr{where $x$ is a local variable}      \\
+%
+\C{i}\ \rho     & = & [@Pushint@\ i] &\\
+\C{e_0~ e_1}\ \rho     & = & \C{e_1}\ \rho \append
+			    \C{e_0}\ \rho^{+1} \append [@Mkap@] &
+		  \tr{where $\rho^{+n}\ x = (\rho\ x) + n$} \\
+
+&&&\\
+\hline
+\end{array}$
+\caption{The \tSC{}, \tR{} and \tC{} compilation schemes}
+\label{gm:fg:schemes1}
+\end{figure*}
+
+The @compile@ function turns a program into an initial state for the
+G-machine.  The initial code sequence finds the global @main@ and then
+evaluates it. The heap is initialised so that it contains a node for
+each global declared. @globals@ contains the map from global names to the
+@NGlobal@ nodes provided for them.
+
+M1-3> compile :: coreProgram -> gmState
+GH1-3> compile :: CoreProgram -> GmState
+1-3> compile program
+1-3> 	= (initialCode, [], heap, globals, statInitial)
+1-3>   	where (heap, globals) = buildInitialHeap program
+
+\par
+To construct the initial heap and to provide the map of the global
+nodes for each global defined we use @buildInitialHeap@. This is just
+as it was in the template machine.
+
+M1-6> buildInitialHeap :: coreProgram -> (gmHeap, gmGlobals)
+GH1-6> buildInitialHeap :: CoreProgram -> (GmHeap, GmGlobals)
+1-6> buildInitialHeap program
+1-6> 	= mapAccuml allocateSc hInitial compiled
+1-6>   	where compiled = map compileSc (preludeDefs ++ program) ++
+1-6>                     compiledPrimitives
+
+The @buildInitialHeap@ function uses @mapAccuml@ to allocate nodes for
+each compiled global; the compilation occurring (where necessary) in
+@compiled@, which has type @[gmCompiledSC]@.
+
+M> gmCompiledSC == (name, num, gmCode)
+GH> type GmCompiledSC = (Name, Int, GmCode)
+
+The function @allocateSc@ allocates a new global for its compiled
+supercombinator argument, returning the new heap and the address where
+the global is stored.
+
+M> allocateSc :: gmHeap -> gmCompiledSC -> (gmHeap, (name, addr))
+GH> allocateSc :: GmHeap -> GmCompiledSC -> (GmHeap, (Name, Addr))
+> allocateSc heap (name, nargs, instns)
+> 	= (heap', (name, addr))
+>   	where (heap', addr) = hAlloc heap (NGlobal nargs instns)
+
+\par
+In the initial state, we want the machine to evaluate the value of the
+program. We recall that this is just the value of the global @main@.
+
+M1-3> initialCode :: gmCode
+GH1-3> initialCode :: GmCode
+1-3> initialCode = [Pushglobal "main", Unwind]
+
+\par
+Each supercombinator is compiled using @compileSc@, which implements
+the \tSC{} scheme of Figure~\ref{gm:fg:schemes1}. It returns a triple
+containing the supercombinator name, the number of arguments the
+supercombinator needs before it can be reduced, and the code sequence
+associated with the supercombinator.
+
+M> compileSc :: (name, [name], coreExpr) -> gmCompiledSC
+GH> compileSc :: (Name, [Name], CoreExpr) -> GmCompiledSC
+> compileSc (name, env, body)
+> 	= (name, length env, compileR body (zip2 env [0..]))
+
+This in turn uses @compileR@, which corresponds to the \tR{} scheme of
+Figure~\ref{gm:fg:schemes1}.
+
+M1-4> compileR :: gmCompiler
+GH1-4> compileR :: GmCompiler
+M1> compileR e env = compileC e env ++ [Slide (#env + 1), Unwind]
+M6> compileR e env = compileC e env ++ [Slide (#env + 1), Unwind]
+GH1> compileR e env = compileC e env ++ [Slide (length env + 1), Unwind]
+GH6> compileR e env = compileE e env ++ [Slide (length env + 1), Unwind]
+
+Each of the compiler schemes has the same type: @gmCompiler@.
+
+M> gmCompiler == coreExpr -> gmEnvironment -> gmCode
+GH> type GmCompiler = CoreExpr -> GmEnvironment -> GmCode
+
+\par
+We use the fact that we can represent the map $\rho$ from the
+compilation scheme as an association list. Not only can we look up the
+offsets for a variable from this list, but we may also calculate how
+many arguments there are on the stack. This is used in @compileR@ to
+find out how many stack elements to squeeze out with a @Slide@
+instruction. The list has type @gmEnvironment@, which is defined as:
+
+M> gmEnvironment == assoc name num
+GH> type GmEnvironment = ASSOC Name Int
+
+This constructs the instantiation of the supercombinator body using
+@compileC@, which corresponds to the \tC{} scheme
+of Figure~\ref{gm:fg:schemes1}.
+
+M1-2> compileC :: gmCompiler
+M1-2> compileC (EVar v)    env = [Push n],       member (aDomain env) v
+M1-2>                          = [Pushglobal v], otherwise
+M1-2>                            where n = aLookup env v (error "Can't happen")
+GH1-2> compileC :: GmCompiler
+GH1-2> compileC (EVar v)    env 
+GH1-2>	| elem v (aDomain env)		= [Push n]
+GH1-2>	| otherwise			= [Pushglobal v]
+GH1-2>	where n = aLookup env v (error "Can't happen")
+1-2> compileC (ENum n)    env = [Pushint n]
+1-2> compileC (EAp e1 e2) env = compileC e2 env ++
+1-2>                            compileC e1 (argOffset 1 env) ++
+1-2>                            [Mkap]
+
+We can change the stack offsets using the function @argOffset@. 
+If @env@ implements
+$\rho$, then @(argOffset n env)@ implements $\rho^{+n}$.
+
+M> argOffset :: num -> gmEnvironment -> gmEnvironment
+GH> argOffset :: Int -> GmEnvironment -> GmEnvironment
+> argOffset n env = [(v, n+m) | (v,m) <- env]
+
+\subsubsection{An example compilation\index{compilation!G-machine example}}
+
+Let us look at the compilation of the @K@ combinator. When compiling
+this function, we will begin by evaluating the following expression.
+\begin{verbatim}
+  compileSc ("K", ["x", "y"], EVar "x")
+\end{verbatim}
+The first element of the tuple is the name (@K@ in this case); the
+second is the argument list (in this case we have two variables: @x@
+and @y@); and the third component of the tuple is the body of the
+supercombinator (which for this example is just the variable @x@).
+
+When we rewrite this expression, we get:
+\begin{verbatim}
+  ("K", 2, compileR (EVar "x") [("x", 0), ("y", 1)])
+\end{verbatim}
+The resulting triple consists of the name (@K@), the number of
+arguments we need to reduce the supercombinator (two in this case),
+and the code sequence to perform the instantiation. When we rewrite
+this expression we will generate the code sequence for this
+supercombinator. Notice that the environment is represented by the
+expression @[("x", 0), ("y", 1)]@; this tells us that when we
+instantiate the body, a pointer to @x@ will be on top of the argument
+stack and a pointer to @y@ will be immediately below @x@ on the stack.
+\begin{verbatim}
+  ("K", 2, compileC (EVar "x") [("x", 0), ("y", 1)] ++ [Slide 3, Unwind])
+\end{verbatim}
+The @compileR@ function is defined to compile the body using
+@compileC@, and to add a @Slide@ and an @Unwind@ instruction at the
+end.
+
+To compile the body we look up @x@ and find that it is on top of the stack.
+We generate code to make a copy of the top of the stack, using @Push 0@.
+\begin{verbatim}
+  ("K", 2, [Push 0, Slide 3, Unwind])
+\end{verbatim}
+
+\begin{exercise}\label{gm:X:symbolic-compilation}
+Write out the equivalent sequence of transformations for the @S@
+combinator from the prelude definitions. Recall that @S@ is defined as:
+\begin{verbatim}
+S f g x = f x (g x)
+\end{verbatim}
+Check the final result by running the compiler and machine with any of
+the simple programs given in Appendix~\ref{sect:core-progs}. (@S@ is
+in the standard prelude.)
+\end{exercise}
+
+\subsubsection{Primitives\index{primitives!in G-machine}}
+
+In this minimal G-machine there are no primitives, so there is nothing
+to implement!
+
+M1-3> compiledPrimitives :: [gmCompiledSC]
+GH1-3> compiledPrimitives :: [GmCompiledSC]
+1-3> compiledPrimitives = []
+
+\subsection{Printing the results\index{execution traces!in G-machine}}
+
+Because a number of the state components are abstract data types (and
+are therefore not directly printable) we must define a pretty-printer
+for the states that the machine produces. It is also a fact that the
+output is voluminous and not very informative if it is all displayed
+at once.
+The printing is controlled by @showResults@. It produces three pieces
+of output: the super-combinator code sequences, the state
+transitions and the final statistics.
+
+M> showResults :: [gmState] -> [char]
+GH> showResults :: [GmState] -> [Char]
+> showResults states
+> 	= iDisplay (iConcat [
+>       iStr "Supercombinator definitions", iNewline,
+>       iInterleave iNewline (map (showSC s) (getGlobals s)),
+>       iNewline, iNewline, iStr "State transitions", iNewline, iNewline,
+>       iLayn (map showState states),
+>       iNewline, iNewline,
+>       showStats (last states)])
+>       where (s:ss) = states
+
+\par
+Taking each of these in turn, we begin with @showSC@. This finds the
+code for the supercombinator in the unique global heap node
+associated with the global, and prints the code sequence using
+@showInstructions@.
+
+M> showSC :: gmState -> (name, addr) -> iseq
+GH> showSC :: GmState -> (Name, Addr) -> Iseq
+> showSC s (name, addr)
+> 	= iConcat [ iStr "Code for ", iStr name, iNewline,
+>             showInstructions code, iNewline, iNewline]
+>   	where (NGlobal arity code) = (hLookup (getHeap s) addr)
+
+Then @showInstructions@ is used to output a code sequence.
+
+M> showInstructions :: gmCode -> iseq
+GH> showInstructions :: GmCode -> Iseq
+> showInstructions is
+> 	= iConcat [iStr "  Code:{",
+>            iIndent (iInterleave iNewline (map showInstruction is)),
+>            iStr "}", iNewline]
+
+The output for each individual instruction is given by
+@showInstruction@.
+
+M1> showInstruction :: instruction -> iseq
+GH1> showInstruction :: Instruction -> Iseq
+1> showInstruction Unwind         = iStr  "Unwind"
+M1> showInstruction (Pushglobal f) = (iStr "Pushglobal ") $iAppend (iStr f)
+M1> showInstruction (Push n)       = (iStr "Push ")       $iAppend (iNum n)
+M1> showInstruction (Pushint n)    = (iStr "Pushint ")    $iAppend (iNum n)
+GH1> showInstruction (Pushglobal f) = (iStr "Pushglobal ") `iAppend` (iStr f)
+GH1> showInstruction (Push n)       = (iStr "Push ")       `iAppend` (iNum n)
+GH1> showInstruction (Pushint n)    = (iStr "Pushint ")    `iAppend` (iNum n)
+1> showInstruction Mkap           = iStr  "Mkap"
+M1> showInstruction (Slide n)      = (iStr "Slide ")      $iAppend (iNum n)
+GH1> showInstruction (Slide n)      = (iStr "Slide ")      `iAppend` (iNum n)
+
+\par
+The next major piece of output is the state transitions; these are
+individually dealt with using @showState@.
+
+M1-3> showState :: gmState -> iseq
+GH1-3> showState :: GmState -> Iseq
+1-3> showState s
+1-3> 	= iConcat [showStack s,		iNewline,
+1-3>	showInstructions (getCode s), 	iNewline]
+
+To correspond with our diagrams, we would like to have the top of
+stack at the bottom of the printed stack. To this end we reverse the
+stack.
+
+M> showStack :: gmState -> iseq
+GH> showStack :: GmState -> Iseq
+> showStack s
+> 	= iConcat [iStr " Stack:[",
+>            iIndent (iInterleave iNewline
+>                        (map (showStackItem s) (reverse (getStack s)))),
+>            iStr "]"]
+
+\par
+Each stack item is displayed using @showStackItem@. It prints the
+address stored in the stack and the object in the heap to which it
+points.
+
+M> showStackItem :: gmState -> addr -> iseq
+GH> showStackItem :: GmState -> Addr -> Iseq
+> showStackItem s a
+> 	= iConcat [iStr (showaddr a), iStr ": ",
+>            showNode s a (hLookup (getHeap s) a)]
+
+\par
+The function @showNode@ needs to invert the association list of global
+names and heap addresses to display the global nodes it comes across.
+
+M1> showNode :: gmState -> addr -> node -> iseq
+GH1> showNode :: GmState -> Addr -> Node -> Iseq
+1> showNode s a (NNum n)      = iNum n
+1> showNode s a (NGlobal n g) = iConcat [iStr "Global ", iStr v]
+M1>	where v = hd [n | (n,b) <- getGlobals s; a=b]
+GH1>	where v = head [n | (n,b) <- getGlobals s, a==b]
+1> showNode s a (NAp a1 a2)   = iConcat [iStr "Ap ", iStr (showaddr a1),
+1>                                       iStr " ",   iStr (showaddr a2)]
+
+\par
+Finally, we print the accumulated statistics, using @showStats@.
+
+M> showStats :: gmState -> iseq
+GH> showStats :: GmState -> Iseq
+> showStats s
+> 	= iConcat [ iStr "Steps taken = ", iNum (statGetSteps (getStats s))]
+
+\par
+This concludes the description of the basic G-machine. We now move on
+to consider ways to make it more sophisticated.
+
+\subsection{Improvements to the Mark~1 G-machine}
+
+\begin{exercise}\label{gm:X:run}
+Run the program @main = S K K 3@.  How many steps does it take? Why
+is it different from that obtained for the template machine? Do you
+think that comparing steps taken is a fair comparison of the machines?
+\end{exercise}
+
+\begin{exercise}\label{gm:X:runagain}
+Try running some other programs from Appendix~\ref{sect:core-progs}.
+Remember, there is no arithmetic in this simple machine.
+\end{exercise}
+
+\begin{exercise}\label{gm:X:pushint}
+It is possible to use the same trick we used for @Pushglobal@ to
+implement @Pushint@: for each distinct number we create a unique node
+in the heap. For example, when we first execute @Pushint 2@, we update
+@gmGlobals@ so that it associates @"2"@ with the address in heap of
+the node @NNum 2@.
+
+In the transition rules, if there is already a global called $n$,
+then we can reuse this global node.
+\gmrule%
+{\gmstate{@Pushint@\ n:i}{s}{h}{m[n: a]}}%
+{\gmstate{i}{a:s}{h}{m}}
+Alternatively, when this is not the case, we will create a new node
+and add it to the global map.
+\gmrule%
+{\gmstate{@Pushint@\ n:i}{s}{h}{m}}%
+{\gmstate{i}{a:s}{h[a: @NNum@\ n]}{m[n: a]}}
+
+The advantage of this scheme is that we can reuse the same number node in
+the heap each time a @Pushint@ is executed.
+
+Implement this new transition @pushint@ for the @Pushint@ instruction.
+You should define an access function for the global component, calling
+it @putGlobals@.
+\end{exercise}
+
+\section{Mark 2: Making it lazy}
+\index{G-machine!Mark 2}\index{G-machine!laziness}\index{updates!in G-machine}
+\label{gm:sc:mark2}
+
+We will now make a number of small changes to the Mark~1 G-machine in
+order to make it lazy. The Mark~1 machine is not lazy at the moment
+because it does not overwrite the root node of the original expression
+before unwinding. This updating is described in
+Section~\ref{sect:templ:update-review}.
+In the Mark~2 machine, the idea is that after instantiating the body
+of the supercombinator, we will {\em overwrite\/}\index{overwrite} the
+root of the original redex\index{redex} with an {\em indirection
+node\/}\index{indirections} pointing to the newly constructed
+instance. The effect is that the machine `remembers' the value that
+was instantiated last time the redex was reduced, and hence does not
+need to recalculate it.
+
+We implement this change as follows. In the Mark~1 machine the code
+for each supercombinator concluded with $[@Slide@\ (n+1),\ @Unwind@]$.
+To capture updating we replace this with $[@Update@\ n,\ @Pop@\ n,\
+@Unwind@]$. This is illustrated in the following diagrams, in which we
+use @#@ to represent indirection nodes.
+
+Figure~\ref{gm:fig:slide} shows how the Mark~1 machine executes a
+$@Slide@\ n+1$ instruction. In Figure~\ref{gm:fig:upd} we see the
+Mark~2 machine executing the sequence $[@Update@\ n,\, @Pop@\ n]$;
+this being the sequence we propose to use as a lazy replacement for
+$[@Slide@\ n+1]$. The @Update@ instruction is responsible for
+overwriting the root node with the newly created instance of the body
+of the supercombinator.  The @Pop@ instruction is used to remove the
+arguments from the stack, as they are now no longer needed.
+\begin{figure} %\centering
+\input{gm_slide}
+\caption{Mark~1 G-machine (executing @Slide n+1@)}
+\label{gm:fig:slide}
+\end{figure}
+\begin{figure*} %\centering
+\input{gm_upd}
+\caption{Mark~2 G-machine (executing @[Update n, Pop n]@)}
+\label{gm:fig:upd}
+\end{figure*}
+
+Let us first consider the necessary modifications to the data structures.
+
+\subsection{Data structures}
+
+In place of the single instruction $@Slide@~n+1$ that we generated last
+time we now generate the sequence of instructions $[@Update@\ n, \
+@Pop@\ n]$. Therefore we are going to have to include these
+instructions in the new instruction set.
+
+M2> instruction ::= Unwind
+M2>                 | Pushglobal name
+M2>                 | Pushint num
+M2>                 | Push num
+M2>                 | Mkap
+M2>                 | Update num
+M2>                 | Pop num
+GH2> data Instruction = Unwind
+GH2>                 | Pushglobal Name
+GH2>                 | Pushint Int
+GH2>                 | Push Int
+GH2>                 | Mkap
+GH2>                 | Update Int
+GH2>                 | Pop Int
+GH2> instance Eq Instruction 
+GH2> 	where
+GH2>	Unwind		== Unwind 		= True
+GH2>	Pushglobal a	== Pushglobal b		= a == b
+GH2>	Pushint a	== Pushint b		= a == b
+GH2>	Push a 		== Push b		= a == b
+GH2>	Mkap		== Mkap			= True
+GH2>	Update a 	== Update b		= a == b
+GH2>	_		== _			= False
+
+\begin{exercise}\label{gm:X:showinst2}
+Modify the function @showInstruction@, so that it displays the new
+instructions.
+\end{exercise}
+
+To implement the indirection nodes we must have a new node type in the
+heap: @NInd@ which we use for indirections.
+
+M2-5> node ::= NNum num             || Numbers
+M2-5>          | NAp  addr addr     || Applications
+M2-5>          | NGlobal num gmCode || Globals
+M2-5>          | NInd addr          || Indirections
+GH2-5> data Node 
+GH2-5>	= NNum Int		-- Numbers
+GH2-5>	| NAp Addr Addr		-- Applications
+GH2-5>	| NGlobal Int GmCode 	-- Globals
+GH2-5>	| NInd Addr		-- Indirections
+GH2-5> instance Eq Node
+GH2-5>   where
+GH2-5>   NNum a       == NNum b          = a == b    -- needed to check conditions
+GH2-5>   NAp a b      == NAp c d         = False     -- not needed
+GH2-5>   NGlobal a b  == NGlobal c d     = False     -- not needed
+GH2-5>   NInd a       == NInd b          = False     -- not needed
+
+Again we must redefine the display function @showNode@, so that it
+reflects the extension of the data type.
+
+\begin{exercise}\label{gm:X:shownode2}
+Make the necessary change to @showNode@.
+\end{exercise}
+
+We have not yet given a semantics to the two new instructions. This is
+done below.
+
+\subsection{The evaluator}
+\label{gm:sc:eval2}
+
+The effect of an @Update@~$n$ instruction is to overwrite the
+$n+1^{\mbox{\footnotesize th}}$ stack item with an indirection to the
+item on top of the stack. Notice that this addressing mode is
+different from that used in \cite{PJBook}. For the intended application
+of this instruction the $a_1\ldots a_n$ are the $n$ application nodes
+forming the spine, and $a_0$ is the function node.
+
+\gmrule%
+{\gmstate{@Update@\ n:i}{a:a_0:\ldots:a_n:s}{h}{m}}%
+{\gmstate{i}{a_0:\ldots:a_n:s}{h[a_n: @NInd@\ a]}{m}}
+
+The @Pop@~$n$ instruction simply removes $n$ stack items.
+Again, in the Mark~2 G-machine $a_1\ldots a_n$ are the application
+nodes forming the spine of the redex.
+
+\gmrule%
+{\gmstate{@Pop@\ n:i}{a_1:\ldots:a_n:s}{h}{m}}%
+{\gmstate{i}{s}{h}{m}}
+
+We must also define a transition for @Unwind@ when the top of stack
+item is an indirection. The effect is to replace the current stack
+item with the item that the indirection points to.
+
+\gmrule%
+{\gmstate{[@Unwind@]}{a_0:s}{h[a_0: @NInd@\ a]}{m}}%
+{\gmstate{[@Unwind@]}{a:s}{h}{m}}
+
+\begin{exercise}\label{gm:X:step2}
+Modify the @dispatch@ function of the Mark~1 machine to incorporate the new
+instructions; implement the new transition rules.
+\end{exercise}
+
+\subsection{The compiler\index{G-machine!compiler Mark 2}}
+\label{gm:sc:compiler2}
+
+The only change to the compiler lies in the code generated by the
+\tR{} scheme. The new definition is given in
+Figure~\ref{gm:fg:schemes2}.
+\begin{figure*} %\centering
+$\begin{array}{|rcll|}
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\R{e}~\rho~d$ generates code which instantiates the expression $e$ in
+environment $\rho$, for a supercombinator of arity $d$, and then proceeds
+to unwind the resulting stack.}}\\
+&&&\\
+\R{e}\ \rho\ d &
+     = & \C{e}\ \rho \append [@Update@\ d,\, @Pop@\ d,\,@Unwind@] & \\
+&&&\\
+\hline
+\end{array}$
+\caption{The \tR{} compilation scheme for Mark~2 G-machine}
+\label{gm:fg:schemes2}
+\end{figure*}
+
+\begin{exercise}\label{gm:X:compileR}
+Modify @compileR@ to implement the new \tR{} scheme.
+\end{exercise}
+
+\begin{exercise}\label{gm:X:run2}
+Run the lazy evaluator on the program:
+\begin{verbatim}
+	twice f x = f (f x)
+	id x = x
+	main = twice twice id 3
+\end{verbatim}
+How many steps does it take? Why is it different from that obtained for
+the Mark 1 machine? Is it fair to compare the number of steps taken
+for the machines?
+\end{exercise}
+
+\section{Mark 3: @let(rec)@ expressions\index{G-machine!Mark 3}}
+\label{gm:sc:mark3}
+\index{let expressions@@@let@ expressions!in G-machine}
+\index{letrec expressions@@@letrec@ expressions!in G-machine}
+
+We now extend the language so that the compiler will accept
+supercombinators whose body includes {\em @let(rec)@-bound
+variables}\index{let(rec)-bound variables@@@let(rec)@-bound variables}.  
+These are represented
+in the data type @coreExpr@ by the constructor @ELet@.  It takes three
+arguments: a boolean flag which says whether the definitions are to be
+treated recursively, the definitions themselves and an expression in
+which the definitions are to be used.
+
+Before we attempt to extend the machine by adding local definitions,
+we will have another look at the stack. In particular we will try to
+define a more efficient {\em access method\/}\index{access method, for
+variables} for variables. Besides the efficiency argument, we also
+wish to make access to locally bound variables the same as that used
+to bind function parameters.
+
+\subsubsection{Argument access from the stack}
+
+Suppose that the unwinding process has reached a supercombinator node
+@f@, and that the supercombinator takes $n$ arguments. In the Mark~1
+machine the stack will be in the state shown in the left-hand diagram of
+Figure~\ref{gm:X:arg}.
+\begin{figure} %\centering
+\input{gm_arg.tex}
+\caption{Stack layout on entry to function @f@}
+\label{gm:X:arg}
+\end{figure}
+
+Having reached the supercombinator @f@, in the Mark~3 G-machine, the
+stack is slightly modified. The equivalent Mark~3 stack is shown in
+the right-hand diagram of Figure~\ref{gm:X:arg}; the top $n$ elements
+now point directly to the expressions {\tt e1} \ldots {\tt en}. The
+important point here is that we have faster access to the
+variables (provided that the variable is accessed at least
+once). This is because we only look at the application node once, to
+get its right-hand argument.
+
+This improves the efficiency of access to the expressions that will be 
+substituted for the formal parameters in the supercombinator. In terms
+of the Mark~1 machine:
+\begin{itemize}
+\item we no longer need the function @getArg@ in the @Push@
+instruction,
+\item but we do need to rearrange the stack when we @Unwind@ a
+supercombinator with sufficient arguments.
+\end{itemize}
+
+Notice that we have retained a pointer to the root of the redex so
+that we can perform an @Update@.
+
+\subsubsection{The effects on instructions\index{G-machine stack layout!revised}}
+
+When we choose to use the new stack layout, we necessarily have to
+modify certain of the machine instructions to cope. The instructions
+affected are @Push@ and @Unwind@. The @Push@ instruction will have to
+change because we do not need to `look through'\index{look through,
+of application nodes} the application node to get at the argument.
+
+\gmrule%
+{\gmstate{@Push@\ n:i}{a_0:\ldots:a_n:s}{h}{m}}%
+{\gmstate{i}{a_n:a_0:\ldots:a_n:s}{h}{m}}
+
+The other modification required for the new stack layout is that
+@Unwind@ must rearrange the stack. This {\em
+rearrangement}\index{rearrange} is required whenever a supercombinator
+with sufficient arguments is found on the top of the stack. The new
+transition rule for @Unwind@ is:
+
+\gmrule%
+{\gmstate{[@Unwind@]}{a_0:\ldots:a_n:s}%
+{h\left[\begin{array}{lll}
+a_0 & : & @NGlobal@\ n\  c\\
+a_1 & : & @NAp@\ a_0\ a_1'\\
+\multicolumn{3}{c}{\cdots}\\
+a_n & : & @NAp@\ a_{n-1}\ a_n'
+\end{array}\right]}{m}}%
+{\gmstate{c}{a_1':\ldots:a_n':a_n:s}{h}{m}}
+Notice that this definition of @Unwind@ will work properly for the
+case where $n$ is zero.
+
+\begin{exercise}\label{gm:X:mark3stackinst}
+Rewrite the @dispatch@ function and the new transitions for the new
+instruction set.  You should make use of the function @rearrange@ to
+rearrange the stack.
+
+M> rearrange :: num -> gmHeap -> gmStack -> gmStack
+GH> rearrange :: Int -> GmHeap -> GmStack -> GmStack
+> rearrange n heap as
+> 	= take n as' ++ drop n as
+>   	where as' = map (getArg . hLookup heap) (tl as)
+
+\end{exercise}
+
+\begin{exercise}\label{gm:X:mark3R}
+Test the compiler and new abstract machine on some sample programs
+from Appendix~\ref{sect:core-progs}, to ensure that the implementation
+still works.
+\end{exercise}
+
+\subsection{Locally bound variables}
+
+Now we return to the implementation of @let(rec)@ expressions,
+considering the non-recursive case first. The variables $x_1
+\ldots x_n$, in the expression
+$@let@~x_1@=@e_1@;@~\ldots@;@~x_n=e_n~@in@~e$, can be treated in the
+same way as the arguments to a supercombinator, once the expressions
+$e_1\ldots e_n$ have been created. That is, we access the variables
+$x_1 \ldots x_n$ via offsets into the stack, using the environment to
+record their locations.
+
+Suppose that the code to build the local definitions is called @Code@,
+then the sequence of actions shown in Figure~\ref{gm:fig:let} will be
+necessary. Initially, the stack will contain pointers to the arguments
+to the supercombinator. After the code to build the local definitions
+has executed we will have $n$ new pointers on the stack. We can now
+proceed to build the body of the @let@ expression, in a new
+environment that maps $x_i$ to the pointer to $e_i$. Finally, we need
+to throw away the pointers to the expressions $e_1\ldots e_n$ from the
+stack.
+\begin{figure} %\centering
+\input{gm_let}
+\caption{Stack usage in non-recursive local definitions}
+\label{gm:fig:let}
+\end{figure}
+
+Because we have added $n$ new variables to the stack ($x_1 \ldots
+x_n$) we must note this fact in the variable map we use to compile
+$e$. The code to construct the local bindings -- which we have called
+@Code@ -- will simply build the graph of each expression $e_1 \ldots
+e_n$ in turn, leaving the address of the piece of graph on the stack.
+
+After building the body expression $e$ -- which may use any of the
+variables $x_1 \ldots x_n$ -- we must remove the pointers to $e_1
+\ldots e_n$ from the stack. This is accomplished by using a @Slide@
+instruction. The complete scheme for compiling a non-recursive local
+definition is given in Figure~\ref{gm:fg:schemes3}
+(p.\pageref{gm:fg:schemes3}).
+
+The situation with recursive local definitions is more complicated:
+each of the expressions $e_1 \ldots e_n$ must be compiled so that the
+variables $x_1\ldots x_n$ are in scope. To do this we create empty
+nodes in the graph, leaving pointers to them on the stack. Each
+expression $e_1 \ldots e_n$ is then compiled using the same variable
+map that we used for the compilation of the body of the non-recursive
+case. At the end of each expression's compiled code we place an
+@Update@ instruction that will overwrite the empty node with the
+correct piece of graph.
+To do this we need one new instruction -- @Alloc n@ -- which will
+create @n@ empty graph nodes for us. In Figure~\ref{gm:fig:letrec} the
+empty graph nodes are represented by a @?@ symbol.
+\begin{figure} %\centering
+\input{gm_lrec}
+\caption{Constructing a recursively defined expression: @e1@}
+\label{gm:fig:letrec}
+\end{figure}
+
+The process shown in Figure~\ref{gm:fig:letrec} needs to be repeated
+until each of the expressions $e_1\ldots e_n$ has been processed.
+Compiling code for the body $e$ is then the same as the previous case
+for non-recursive local definitions. We now add the new data types for
+the Mark~3 machine.
+
+\subsection{Data structures\index{data structures!G-machine Mark 3}}
+
+The instruction data type includes all of the instructions of the
+Mark~2 machine, with the new @Alloc@ instruction and the @Slide@
+instruction from the Mark~1 machine.
+
+\begin{exercise}\label{gm:X:instruction3}
+Modify the data type @instruction@ so that it includes @Alloc@ and
+@Slide@.  You will also need to modify the function @showInstruction@,
+to accommodate these new instructions.
+\end{exercise}
+
+\subsection{The evaluator\index{evaluator!G-machine Mark 3}}
+\label{gm:sc:evaluator3}
+
+For the Mark~3 G-machine we will need to add the @Alloc@ instruction
+which creates @n@ locations in the heap. We use these locations to
+mark the places we will store the locally bound expressions. These
+nodes are initially created as indirection nodes that point to an
+illegal heap address: @hNull@. Because these nodes created by @Alloc@
+are going to be overwritten, it does not really matter what value we
+assign them.
+
+\gmrule%
+{\gmstate{@Alloc@\ n:i}{s}{h}{m}}%
+{\gmstate{i}{a_1:\ldots:a_n:s}{h\left[\begin{array}{lll}
+a_1 & : & @NInd hNull@\\
+\multicolumn{3}{c}{\cdots}\\
+a_n & : & @NInd hNull@
+\end{array}\right]}{m}}
+
+To implement @alloc@, the transition function for the @Alloc@ instruction, we
+use an auxiliary function @allocNodes@. Given the number of nodes
+required and the current heap, it returns a pair consisting of the
+modified heap and the list of addresses of the indirection nodes.
+
+M3-> allocNodes :: num -> gmHeap -> (gmHeap, [addr])
+GH3-> allocNodes :: Int -> GmHeap -> (GmHeap, [Addr])
+3-> allocNodes 0     heap = (heap,  [])
+3-> allocNodes (n+1) heap = (heap2, a:as)
+3->                         where (heap1, as) = allocNodes n heap
+3->                               (heap2, a)  = hAlloc heap1 (NInd hNull)
+
+\begin{exercise}\label{gm:X:step3}
+Extend the @dispatch@ function, with cases for the new instructions.
+You should use @allocNodes@ to implement @alloc@, the transition
+function for the @Alloc@ instruction.
+\end{exercise}
+
+\subsection{The compiler\index{G-machine compiler!Mark 3}}
+
+The only change to the compiler is that there are now two more cases for which
+the \tC{} scheme can compile code. The modification to @compileC@ is simple.
+It can now cope with a wider range of @coreExpr@s. We need two new functions:
+@compileLetrec@ and @compileLet@.
+
+M3-5> compileC :: gmCompiler
+GH3-5> compileC :: GmCompiler
+M3-5> compileC (EVar v)    env = [Push n],       member (aDomain env) v
+M3-5>                          = [Pushglobal v], otherwise
+M3-5>                            where n = aLookup env v n
+GH3-5> compileC (EVar v)      args 
+GH3-5>	| elem v (aDomain args) = [Push n]
+GH3-5>	| otherwise		= [Pushglobal v]
+GH3-5>       	where n = aLookup args v (error "")
+3-5> compileC (ENum n)    env = [Pushint n]
+3-5> compileC (EAp e1 e2) env = compileC e2 env ++
+3-5>                            compileC e1 (argOffset 1 env) ++
+3-5>                            [Mkap]
+M3-5> compileC (ELet recursive defs e)
+M3-5>                      env = compileLetrec compileC defs e env, recursive
+M3-5>                          = compileLet    compileC defs e env, otherwise
+GH3-5> compileC (ELet recursive defs e) args 
+GH3-5>		| recursive	= compileLetrec compileC defs e args
+GH3-5>		| otherwise	= compileLet    compileC defs e args
+
+\par
+The definition of @compileLet@ follows the specification given in
+Figure~\ref{gm:fg:schemes3}. It takes as arguments: the compilation
+scheme @comp@ for the body @e@, the definitions @defs@ and the current
+environment @env@. We have provided the compiler parameter so that in
+later versions of the machine we do not have to rewrite this function.
+\begin{figure*}
+$\begin{array}{|lcl@@{}l|}
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\C{e}~\rho$ generates code which constructs the graph of $e$ in environment
+$\rho$, leaving a pointer to it on top of the stack.}}\\
+&&&\\
+\C{f}\ \rho     & = & [@Pushglobal@\ f] &
+		\tr{where $f$ is a supercombinator} \\
+%
+\C{x}\ \rho     & = & [@Push@\ (\rho\ x)] &
+			\tr{where $x$ is a local variable}      \\
+%
+\C{i}\ \rho     & = & [@Pushint@\ i] &\\
+\C{e_0~e_1}\ \rho     & = & \C{e_1}\ \rho \append
+			    \C{e_0}\ \rho^{+1} \append [@Mkap@] &
+		  \tr{where $\rho^{+n}\ x$ is $(\rho\ x) + n$} \\
+%
+\multicolumn{4}{|l|}{%
+\C{@let@~ x_1@=@e_1@;@~\ldots@;@~ x_n@=@e_n ~@in@~ e}~ \rho} \\
+ & = & \C{e_1}~ \rho^{+0} \append \ldots \append &\\
+    &&  \C{e_n}~\rho^{+(n-1)} \append & \\
+    &&  \C{e}~\rho' \append [@Slide@~ n]
+       &\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}\\
+%
+\multicolumn{4}{|l|}{%
+\C{@letrec@~ x_1@=@e_1@;@~\ldots@;@~ x_n @=@ e_n ~@in@~ e}~ \rho} \\
+ & = & [@Alloc@~ n] \append & \\
+    &&\C{e_1}~ \rho' \append [@Update@\ n-1]\append \ldots \append &\\
+		 &&       \C{e_n}~\rho' \append [@Update@\ 0] \append &\\
+	       &&         \C{e}~\rho' \append [@Slide@~ n] &
+	\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}\\
+&&&\\
+\hline
+\end{array}$
+\caption{The modified \tC{} compilation scheme for @let@ and @letrec@}
+\label{gm:fg:schemes3}
+\end{figure*}
+
+M3-> compileLet :: gmCompiler -> [(name, coreExpr)] -> gmCompiler
+GH3-> compileLet :: GmCompiler -> [(Name, CoreExpr)] -> GmCompiler
+3-> compileLet comp defs expr env
+M3-> 	= compileLet' defs env ++ comp expr env' ++ [Slide (#defs)]
+GH3-> 	= compileLet' defs env ++ comp expr env' ++ [Slide (length defs)]
+3->   	where env' = compileArgs defs env
+
+\par
+The compilation of the new definitions is accomplished by the function
+@compileLet'@.
+
+M3-> compileLet' :: [(name, coreExpr)] -> gmEnvironment -> gmCode
+GH3-> compileLet' :: [(Name, CoreExpr)] -> GmEnvironment -> GmCode
+3-> compileLet' []                  env = []
+3-> compileLet' ((name, expr):defs) env
+3-> 	= compileC expr env ++ compileLet' defs (argOffset 1 env)
+
+@compileLet@ also uses @compileArgs@ to modify the offsets into the
+stack for the compilation of the body, @e@.
+
+M> compileArgs :: [(name, coreExpr)] -> gmEnvironment -> gmEnvironment
+GH> compileArgs :: [(Name, CoreExpr)] -> GmEnvironment -> GmEnvironment
+> compileArgs defs env
+M> 	= zip2 (map first defs) [n-1, n-2 .. 0] ++ argOffset n env
+M>   	where n = #defs
+GH> 	= zip (map first defs) [n-1, n-2 .. 0] ++ argOffset n env
+GH>		where n = length defs
+
+\subsubsection{An example}
+
+In this example we will show how the code for the fixpoint combinator
+@Y@\index{Y combinator@@@Y@ combinator} is compiled.
+The definition we will use is:
+\begin{verbatim}
+Y f = letrec x = f x in x
+\end{verbatim}
+This is the so-called `knot-tying' fixpoint
+combinator\index{fixpoint combinator!knot-tying}; we will see why it has this
+name when we run the resulting code.  When the above definition is
+compiled, the @compileSc@ function will need to produce code for the
+supercombinator.
+\begin{verbatim}
+compileSc ("Y", ["f"], ELet True [("x", EAp (EVar "f") (EVar "x"))] (EVar "x"))
+\end{verbatim}
+This in turn calls the @compileR@ function with an environment for the
+variable @f@; having first created a name for the supercombinator
+(@Y@) and its number of arguments (@1@).
+\begin{verbatim}
+("Y", 1, compileR e [("f", 0)])
+where e = ELet True [("x", EAp (EVar "f") (EVar "x"))] (EVar "x")
+\end{verbatim}
+For convenience we will refer to the body of the expression as @e@.
+The function @compileR@ calls @compileC@, placing the tidying-up code
+at the end.
+\begin{verbatim}
+("Y", 1, compileC e [("f", 0)] ++ [Update 1, Pop 1, Unwind])
+\end{verbatim}
+
+Referring to the compilation scheme in Figure~\ref{gm:fg:schemes3}, we
+see that to compile a @letrec@ we first create a new environment. In
+the figure this is called $\rho'$; in this example we will call it
+@p@.  It is an extension of the initial environment in which we also
+give a stack location to the local variable @x@.
+\begin{verbatim}
+("Y", 1, [Alloc 1] ++
+	 compileC (EAp (EVar "f") (EVar "x")) p ++ [Update 0] ++
+	 compileC (EVar "x") p ++ [Slide 1] ++
+	 [Update 1, Pop 1, Unwind])
+	 where p = [("x", 0), ("f", 1)]
+\end{verbatim}
+
+The code generation is laid out in the same fashion as the compilation
+scheme. When the expressions involving @compileC@ are simplified we
+get:
+\begin{verbatim}
+("Y", 1, [Alloc 1] ++
+	 [Push 0, Push 2, Mkap] ++ [Update 0] ++
+	 [Push 0] ++ [Slide 1] ++
+	 [Update 1, Pop 1, Unwind])
+\end{verbatim}
+Which gives the following code sequence:
+\begin{verbatim}
+("Y", 1, [Alloc 1, Push 0, Push 2, Mkap, Update 0, Push 0,
+	  Slide 1, Update 1, Pop 1, Unwind])
+\end{verbatim}
+
+We can see the way in which this code executes in
+Figure~\ref{gm:fg:y3}.  This definition of the @Y@ supercombinator is
+called `knot-tying' because we are tying a knot in the graph when we
+do the @Update 0@ as the fifth instruction. We have not shown the
+remainder of the instructions, as this is left as
+Exercise~\ref{gm:X:runY3}.
+\begin{figure} %\centering
+\input{gm_y1}
+
+\vspace{0.25in}
+
+\input{gm_y2}
+\caption{Execution of code for @Y@}\label{gm:fg:y3}
+\end{figure}
+
+\begin{exercise}\label{gm:X:letrec3}
+The compilation of @letrec@s is defined in Figure~\ref{gm:fg:schemes3}.
+Implement the function @compileLetrec@ to perform this operation.
+\end{exercise}
+
+\begin{exercise}\label{gm:X:test3}
+What test programs would you use to show that the new compiler and
+instruction set work properly?
+\end{exercise}
+
+\begin{exercise}\label{gm:X:runY3}
+By running the code generated for the supercombinator @Y@, or
+otherwise, draw the remainder of the state transitions in the style of
+Figure~\ref{gm:fg:y3}.
+\end{exercise}
+
+\begin{exercise}\label{gm:X:optY}
+Give a shorter, alternative, code sequence for the supercombinator
+@Y@. It should still construct a `knot-tying' version.
+\end{exercise}
+
+\begin{exercise}\label{gm:X:Y3}
+In the absence of a @letrec@ construct in the language, how would you
+define the fixpoint combinator @Y@? How is this definition different
+from the one we used in the example?
+\end{exercise}
+
+\section{Mark 4: Adding primitives\index{G-machine!Mark 4}\index{arithmetic!in G-machine}}
+\label{gm:sc:primitives}
+
+In this section we add primitive operations to the G-machine; this
+makes it useful. By primitive operations we mean
+operations like addition, multiplication and so on. We will use
+addition as a running example throughout this section.
+
+The addition instruction will be called @Add@; which adds two numbers
+from the heap, placing the result into a new node in the heap. The
+addresses of the two arguments are on top of the stack, and this is
+where the address of the result is subsequently placed. It has the
+following transition rule.
+
+\gmrule%
+{\gmstate{@Add@ :i}{a_0:a_1:s}{h[a_0: @NNum@\ n_0,\ a_1: @NNum@\ n_1]}{m}}%
+{\gmstate{i}{a:s}{h[a: @NNum@\ n_0+n_1]}{m}}
+
+We could continue to expand the G-machine with other instructions to
+implement the remainder of the operations required, but before we do,
+let us pause to consider whether we have missed something here. The
+problem is that the rule only applies if the two objects on top of the
+stack are numbers. Since we are working on a machine that supports
+lazy evaluation there is no good reason to suppose that this will
+always be the case. In the template machine @Add@ checked that its
+arguments were evaluated. In the G-machine we want to keep the
+instructions simple, so we will only use @Add@ in situations where we
+guarantee that the arguments are already evaluated.
+
+What we do instead is to augment the instruction set further with an
+@Eval@ instruction. This satisfies the following constraint:
+
+\begin{important}
+Suppose that we are in a state:
+\[\begin{array}{|lrrll|}\hline
+& \gmstate{@Eval@: i}{a:s}{h}{m}\\ \hline
+\end{array}\]
+Whenever execution resumes with instruction sequence $i$, the state
+will be:
+\[\begin{array}{|lrrll|}\hline
+& \gmstate{i}{a:s}{h'}{m}\\ \hline
+\end{array}\]
+and the item on top of the stack will be in WHNF\index{weak head normal form}.
+
+It is also possible for @Eval@ to fail to terminate; this will be the
+case when the node pointed to from the top of the stack has no WHNF.
+\end{important}
+
+If the node whose address is on top of the stack is already in WHNF,
+then the @Eval@ instruction does nothing. If there is reduction to be
+performed, then the action of @Eval@ is to perform an evaluation to
+WHNF. If this call terminates then execution resumes with nothing
+except the heap component changed.
+This is similar to the structure of {\em subroutine call and
+return\/}\index{subroutine call and return} traditionally used in
+programming language implementation. We recall that the classic way to
+implement this feature is to use a stack. The stack will save
+sufficient of the machine's current context that it can resume when
+the subroutine call completes.
+
+In the Mark~4 G-machine this stack is called the {\em
+dump}\index{dump!in G-machine}, and is a stack of pairs, whose first
+component is a code sequence, and whose second component is a stack.
+This is similar to the dump in the template machine (see
+Section~\ref{sect:templ:primitives}), except we now have to restore
+the original code sequence as well as the original stack. Hence both
+components are kept on the dump.
+
+\subsection{Data structures\index{data structures!G-machine Mark 4}}
+
+We extend the G-machine state by adding a dump component. As previously
+discussed, this is used to implement recursive calls to the evaluator.
+
+M4-5> gmState == (gmCode,            || Current instruction stream
+M4-5>             gmStack,           || Current stack
+M4-5>             gmDump,            || Current dump
+M4-5>             gmHeap,            || Heap of nodes
+M4-5>             gmGlobals,         || Global addresses in heap
+M4-5>             gmStats)           || Statistics
+GH4-5> type GmState = ( GmCode, 	     -- current Instruction
+GH4-5> 		       GmStack,	     -- current Stack
+GH4-5> 		       GmDump,	     -- current Dump
+GH4-5> 		       GmHeap, 	     -- Heap of Nodes
+GH4-5> 		       GmGlobals,    -- Global adresses in Heap
+GH4-5> 		       GmStats)	     -- Statistics
+
+The dump itself is a stack of @dumpItem@. Each of these is a pair
+consisting of the instruction stream and stack to use when we resume
+the original computation.
+
+M4-> gmDump     == [gmDumpItem]
+M4-> gmDumpItem == (gmCode, gmStack)
+GH4-> type GmDump = [GmDumpItem]
+GH4-> type GmDumpItem = (GmCode, GmStack)
+
+When we add this new component we must change all of the previously
+specified access functions. We must also add access functions for the
+dump.
+
+M4-> getDump :: gmState -> gmDump
+GH4-> getDump :: GmState -> GmDump
+4-5> getDump (i, stack, dump, heap, globals, stats) = dump
+
+M4-> putDump :: gmDump -> gmState -> gmState
+GH4-> putDump :: GmDump -> GmState -> GmState
+4-5> putDump dump' (i, stack, dump, heap, globals, stats)
+4-5> 	= (i, stack, dump', heap, globals, stats)
+
+\par
+Notice that it is only in the access functions that we have done
+pattern matching on G-machine states. Changes to other functions as a
+result of adding new components to the state are no longer needed.
+
+\begin{exercise}\label{gm:X:access4}
+Make the relevant changes to the other access functions.
+\end{exercise}
+
+In addition to the new definition of state, we also need some new
+instructions.  We reuse all of the instructions from the Mark~3
+machine.
+
+M4-5> instruction ::= Slide num
+M4-5>		| Alloc num
+M4-5>		| Update num
+M4-5> 		| Pop num
+M4-5> 		| Unwind
+M4-5> 		| Pushglobal name
+M4-5> 		| Pushint num
+M4-5> 		| Push num
+M4-5>		| Mkap
+GH4-5> data Instruction 
+GH4-5> 		= Slide Int
+GH4-5> 		| Alloc Int
+GH4-5>  		| Update Int
+GH4-5> 		| Pop Int
+GH4-5>		| Unwind
+GH4-5> 		| Pushglobal Name
+GH4-5> 		| Pushint Int
+GH4-5> 		| Push Int
+GH4-5> 		| Mkap
+
+In addition we include the @Eval@ instruction,
+
+4-5> 		| Eval
+
+the following arithmetic instructions:
+
+4-5> 		| Add | Sub | Mul | Div | Neg
+
+and the following comparison instructions:
+
+4-5> 		| Eq | Ne | Lt | Le | Gt | Ge
+
+We also include a primitive form of conditional in the @Cond@
+instruction.
+
+M4-5>		| Cond gmCode gmCode
+GH4-5>		| Cond GmCode GmCode
+
+\begin{exercise}\label{gm:X:showinstructions4}
+Add cases to @showInstruction@ to print all of the new instructions.
+\end{exercise}
+
+\subsection{Printing the state}
+
+We take this opportunity to revise the definition of @showState@, so
+that it displays the dump component.
+
+M4-5> showState :: gmState -> iseq
+GH4-5> showState :: GmState -> Iseq
+4-5> showState s
+4-5> 	= iConcat 	[showStack s,                  iNewline,
+4-5>			 showDump s,                   iNewline,
+4-5>			 showInstructions (getCode s), iNewline]
+
+We therefore need to define @showDump@.
+
+M4-> showDump :: gmState -> iseq
+GH4-> showDump :: GmState -> Iseq
+4-> showDump s
+4-> 	= iConcat 	[iStr "  Dump:[",
+4->			 iIndent (iInterleave iNewline
+4->				(map showDumpItem (reverse (getDump s)))),
+4->			 iStr "]"]
+
+This in turn needs the function @showDumpItem@.
+
+M4-> showDumpItem :: gmDumpItem -> iseq
+GH4-> showDumpItem :: GmDumpItem -> Iseq
+4-> showDumpItem (code, stack)
+4-> 	= iConcat	[iStr "<",
+4->			 shortShowInstructions 3 code, iStr ", ",
+4->			 shortShowStack stack,         iStr ">"]
+
+\par
+We use the function @shortShowInstructions@ to print only the
+first three instructions of the instruction stream in the dump items.
+This is usually sufficient to indicate where the computation will
+resume.
+
+M4-> shortShowInstructions :: num -> gmCode -> iseq
+GH4-> shortShowInstructions :: Int -> GmCode -> Iseq
+4-> shortShowInstructions number code
+4-> 	= iConcat [iStr "{", iInterleave (iStr "; ") dotcodes, iStr "}"]
+4->   	where 	codes 	= map showInstruction (take number code)
+M4->         	dotcodes = codes ++ [iStr "..."], #code > number
+M4->                  	 = codes,                 otherwise
+GH4->             dotcodes	| length code > number	= codes ++ [iStr "..."]
+GH4->				| otherwise		= codes
+
+Similarly, we do not need the full details of the stack component of
+the dump item either, so we use @shortShowStack@.
+
+M4-> shortShowStack :: gmStack -> iseq
+GH4-> shortShowStack :: GmStack -> Iseq
+4-> shortShowStack stack
+4-> 	= iConcat [iStr "[",
+4->            iInterleave (iStr ", ") (map (iStr . showaddr) stack),
+4->            iStr "]"]
+
+\subsection{The new instruction transitions}
+\label{gm:sc:inst4}
+
+\subsubsection{Evaluator instructions}
+
+There are actually very few instructions that manipulate the dump.
+First, there is @Eval@ itself, which creates a new dump item whenever
+the node on top of the stack is not in WHNF. Secondly, there is a
+modification to the @Unwind@ instruction that pops a dump item when an
+evaluation is completed.
+
+We first describe the new @Unwind@ instruction. When the expression
+held in the stack is in WHNF, @Unwind@ can restore the old context
+from the dump, placing the last address in the stack on the restored
+old stack. We see this clearly in the transition for the case of
+numbers.\footnote{The rule only applies if the dump is non-empty; if
+the dump is empty then the machine has terminated.}
+
+\gmruled%
+{\gmstated{[@Unwind@]}{a:s}{\langle i',\,s'\rangle:d}{h[a: @NNum@\ n]}{m}}%
+{\gmstated{i'}{a:s'}{d}{h}{m}}
+
+The expression with address $a$ is in WHNF because it is an integer,
+so we restore the old instruction sequence $i'$ and the stack is now
+the old stack $s'$ with the address $a$ on top. All other transitions
+for @Unwind@ remain the same as they were in the Mark~3 machine
+(except that they have the dump component in their state).
+
+We are now in a position to specify the rule for @Eval@. It saves the
+remainder of the stack $s$ and the rest of the instructions $i$ as a
+dump item on the dump. The new code sequence is just unwinding and the
+new stack contains the singleton $a$.
+
+\gmruled%
+{\gmstated{@Eval@ :i}{a:s}{d}{h}{m}}%
+{\gmstated{[@Unwind@]}{[a]}{\langle i,\,s\rangle:d}{h}{m}}
+
+\subsubsection{Arithmetic instructions\index{arithmetic!in G-machine}}
+
+The {\em dyadic arithmetic operators\/}\index{dyadic arithmetic
+operators} all have the following generic transition rule.  Let us
+suppose that the arithmetic operator we wish to implement is $\odot$;
+the transition rule for the instruction $\odot$ is then:
+
+\gmruled%
+{\gmstated{\odot :i}{a_0:a_1:s}{d}%
+{h[a_0: @NNum@\ n_0,\,a_1: @NNum@\ n_1]}{m}}%
+{\gmstated{i}{a:s}{d}{h[a: @NNum@\ (n_0\,\odot\, n_1)]}{m}}
+
+What has happened is that the two numbers on top of the stack have had
+the dyadic operator $\odot$ applied to them. The result, which is
+entered into the heap, has its address placed on the stack. The @Neg@
+instruction negates the number on top of the stack, so it has
+transition rule:
+
+\gmruled%
+{\gmstated{@Neg@ :i}{a:s}{d}{h[a: @NNum@\ n]}{m}}%
+{\gmstated{i}{a':s}{d}{h[a': @NNum@\ (-n)]}{m}}
+
+Notice how similar all of the dyadic operations are. First we extract
+the two numbers from the heap, then we perform the operation, and
+finally we place the answer back in the heap. This suggests that we
+should write some higher-order functions\index{higher-order function}
+that are parameterised over the extraction from heap (which we call
+`unboxing'\index{unboxing!of values from the heap} the value), and
+insertion back into the heap (which we call `boxing'\index{boxing!of
+values into the heap} the value), along with the specific operation we
+wish to perform.
+
+Let us write the boxing operations first. @boxInteger@ takes a number
+and an initial state, and returns a new state in which the number has
+been placed into the heap, and a pointer to this new node left on top
+of the stack.
+
+M> boxInteger :: num -> gmState -> gmState
+GH> boxInteger :: Int -> GmState -> GmState
+> boxInteger n state
+> 	= putStack (a: getStack state) (putHeap h' state)
+>   	where (h', a) = hAlloc (getHeap state) (NNum n)
+
+\par
+Now to extract an integer at address @a@ from a state, we will use
+@unboxInteger@.
+
+M> unboxInteger :: addr -> gmState -> num
+GH> unboxInteger :: Addr -> GmState -> Int
+> unboxInteger a state
+> 	= ub (hLookup (getHeap state) a)
+>   	where 	ub (NNum i) = i
+>		ub n        = error "Unboxing a non-integer"
+
+\par
+A generic {\em monadic operator\/}\index{monadic arithmetic operator} can now be
+specified in terms of its boxing function, @box@, its unboxing
+function @unbox@, and the operator @op@ on the unboxed values.
+
+M4-6> primitive1 :: (** -> gmState -> gmState) || boxing function
+M4-6>                -> (addr -> gmState -> *) || unboxing function
+M4-6>                -> (* ->  **)             || operator
+M4-6>                -> (gmState -> gmState)   || state transition
+GH4-6> primitive1 :: (b -> GmState -> GmState)	-- boxing function
+GH4-6>		-> (Addr -> GmState -> a)	-- unbixing function
+GH4-6> 		-> (a -> b)			-- operator
+GH4-6>		-> (GmState -> GmState)		-- state transition
+
+4-6> primitive1 box unbox op state
+4-6> 	= box (op (unbox a state)) (putStack as state)
+4-6>   	where (a:as) = getStack state
+
+\par
+The generic {\em dyadic operators\/}\index{dyadic arithmetic operator}
+can now be implemented in a similar way using @primitive2@.
+
+M4-6> primitive2 :: (** -> gmState -> gmState) || boxing function
+M4-6>                -> (addr -> gmState -> *) || unboxing function
+M4-6>                -> (* ->  * -> **)        || operator
+M4-6>                -> (gmState -> gmState)   || state transition
+GH4-6> primitive2 :: (b -> GmState -> GmState)	-- boxing function
+GH4-6>		-> (Addr -> GmState -> a)	-- unbixing function
+GH4-6> 		-> (a -> a -> b)		-- operator
+GH4-6>		-> (GmState -> GmState)		-- state transition
+
+4-6> primitive2 box unbox op state
+4-6> 	= box (op (unbox a0 state) (unbox a1 state)) (putStack as state)
+4-6>   	where (a0:a1:as) = getStack state
+
+\par
+To be even more explicit, @arithmetic1@ implements all {\em monadic
+arithmetic}\index{monadic arithmetic operator}, and @arithmetic2@
+implements all {\em dyadic arithmetic}\index{dyadic arithmetic
+operator}.
+
+M4-6> arithmetic1 :: (num -> num)              || arithmetic operator
+M4-6>                -> (gmState -> gmState)   || state transition
+GH4-6> arithmetic1 :: 	(Int -> Int)		-- arithmetic operator
+GH4-6> 			-> (GmState -> GmState)	-- state transition
+
+4-6> arithmetic1 = primitive1 boxInteger unboxInteger
+
+M4-6> arithmetic2 :: (num -> num -> num)       || arithmetic operator
+M4-6>                -> (gmState -> gmState)   || state transition
+GH4-6> arithmetic2 ::	(Int -> Int -> Int)	-- arithmetic operation
+GH4-6>			-> (GmState -> GmState)	-- state transition
+
+4-6> arithmetic2 = primitive2 boxInteger unboxInteger
+
+As the alert reader would expect, we will be taking advantage of the
+generality of these functions later in the chapter.
+
+\begin{exercise}\label{gm:X:step4}
+Implement all of the new instruction transitions for the machine.
+Modify the @dispatch@ function to deal with the new instructions. You
+should use the higher-order functions @primitive1@ and @primitive2@
+to implement the operators.
+\end{exercise}
+
+\begin{exercise}\label{gm:X:ind4}
+Why are indirection nodes never left on top of the stack on completing
+an @Eval@ instruction?
+\end{exercise}
+
+\subsubsection{Comparison instructions\index{comparison operators!in G-machine}}
+
+The {\em comparison operators\/}\index{comparison operators} all have
+the following generic transition rule.  Let us suppose that the
+comparison operator we wish to implement is $\odot$; the transition
+rule for the instruction $\odot$ is then:
+
+\gmruled%
+{\gmstated{\odot :i}{a_0:a_1:s}{d}%
+{h[a_0: @NNum@\ n_0,\,a_1: @NNum@\ n_1]}{m}}%
+{\gmstated{i}{a:s}{d}{h[a: @NNum@\ (n_0\,\odot\, n_1)]}{m}}
+
+What has happened is that the two numbers on top of the stack have had
+the dyadic operator $\odot$ applied to them. The result, which is
+entered into the heap, has its address placed on the stack.
+This is almost the same as arithmetic.
+
+The difference is that an operation, @==@ say, returns a boolean and
+not an integer. To fix this we turn booleans into integers using the
+following rule:
+
+\begin{itemize}
+\item we represent @True@ by the integer @1@;
+\item we represent @False@ by the integer @0@.
+\end{itemize}
+
+To make the use of @primitive2@ possible, we define @boxBoolean@
+
+M4-5> boxBoolean :: bool -> gmState -> gmState
+GH4-5> boxBoolean :: Bool -> GmState -> GmState
+4-5> boxBoolean b state
+4-5> 	= putStack (a: getStack state) (putHeap h' state)
+4-5>   	where 	(h',a) = hAlloc (getHeap state) (NNum b')
+M4-5>         	b' 	= 1, b
+M4-5>            	= 0, otherwise
+GH4-5>		  b' | b		= 1
+GH4-5>		     | otherwise	= 0
+
+Using this definition we can write a generic comparison function,
+which we call @comparison@. This function takes a {\em
+boxing}\index{boxing function} function for the booleans, the unboxing
+function for integers (@unboxInteger@), and a comparison operator; it
+returns a state transition.
+
+M4-6> comparison :: (num -> num -> bool) -> gmState -> gmState
+GH4-6> comparison :: (Int -> Int -> Bool) -> GmState -> GmState
+4-6> comparison = primitive2 boxBoolean unboxInteger
+
+\par
+Finally, we implement the @Cond@ instruction, which we will use to
+compile the @if@ function. It has two transition rules:
+
+\gmruled%
+{\gmstated{@Cond@\ i_1\ i_2 :i}{a:s}{d}{h[a: @NNum@\ 1]}{m}}%
+{\gmstated{i_1 \append i}{s}{d}{h}{m}}
+
+In the first case -- where there is the number @1@ on top of the stack
+-- we take the first branch. This means that we execute the
+instructions $i_1$ before continuing to execute the instructions $i$.
+
+\gmruled%
+{\gmstated{@Cond@\ i_1\ i_2 :i}{a:s}{d}{h[a: @NNum@\ 0]}{m}}%
+{\gmstated{i_2 \append i}{s}{d}{h}{m}}
+
+Alternatively, if the number on top of the stack is @0@, we execute
+the instruction sequence $i_2$ first, and then the sequence $i$.
+
+\begin{exercise}
+Implement the transitions for the comparison instructions and the
+@Cond@ instruction.
+\end{exercise}
+
+\subsection{The compiler\index{G-machine compiler!Mark 4}}
+
+The compiler will eventually need to be changed to take advantage of
+these new instructions to compile arithmetic expressions. For the
+moment we make only the minimum set of changes that will allow us to
+use the arithmetic instructions we have so laboriously added. First, the
+@compile@ function must create a new initial state in which the
+initial dump is empty and in which the initial code sequence differs
+from the one we have used so far.
+
+M4-5> compile :: coreProgram -> gmState
+GH4-5> compile :: CoreProgram -> GmState
+4-5> compile program
+4-5> 	= (initialCode, [], [], heap, globals, statInitial)
+4-5>   	where (heap, globals) = buildInitialHeap program
+
+M4-5> initialCode :: gmCode
+GH4-5> initialCode :: GmCode
+4-5> initialCode = [Pushglobal "main", Eval]
+
+\begin{exercise}\label{gm:X:evalForUnwind}
+Why has the initial instruction sequence been changed? What happens if
+we retain the old one?
+\end{exercise}
+
+The simplest way to extend the compiler is simply to add G-machine
+code for each of the new built-in functions to the
+@compiledPrimitives@.  The initial four instructions of the sequence
+ensure that the arguments have been evaluated to integers.
+
+M4-6> compiledPrimitives :: [gmCompiledSC]
+GH4-6> compiledPrimitives :: [GmCompiledSC]
+4-6> compiledPrimitives
+4-6> 	= 	[("+", 2, [Push 1, Eval, Push 1, Eval, Add, Update 2, Pop 2, Unwind]),
+4-6>    	 ("-", 2, [Push 1, Eval, Push 1, Eval, Sub, Update 2, Pop 2, Unwind]),
+4-6>    	 ("*", 2, [Push 1, Eval, Push 1, Eval, Mul, Update 2, Pop 2, Unwind]),
+4-6>    	 ("/", 2, [Push 1, Eval, Push 1, Eval, Div, Update 2, Pop 2, Unwind]),
+
+We also need to add the negation function. As this only takes one
+argument, we only evaluate one argument.
+
+4-6>    	 ("negate", 1, [Push 0, Eval, Neg, Update 1, Pop 1, Unwind]),
+
+\par
+The comparison operations are implemented as follows.
+
+4-6>    	 ("==", 2, [Push 1, Eval, Push 1, Eval, Eq, Update 2, Pop 2, Unwind]),
+4-6>    	 ("~=", 2, [Push 1, Eval, Push 1, Eval, Ne, Update 2, Pop 2, Unwind]),
+4-6>    	 ("<",  2, [Push 1, Eval, Push 1, Eval, Lt, Update 2, Pop 2, Unwind]),
+4-6>    	 ("<=", 2, [Push 1, Eval, Push 1, Eval, Le, Update 2, Pop 2, Unwind]),
+4-6>    	 (">",  2, [Push 1, Eval, Push 1, Eval, Gt, Update 2, Pop 2, Unwind]),
+4-6>    	 (">=", 2, [Push 1, Eval, Push 1, Eval, Ge, Update 2, Pop 2, Unwind]),
+
+The @if@ function is compiled so that it uses @Cond@ for the
+branching.
+
+4-6>    	 ("if", 3, [Push 0, Eval, Cond [Push 1] [Push 2],
+4-6>                             Update 3, Pop 3, Unwind])]
+
+\begin{exercise}\label{gm:X:tests4}
+What test programs from Appendix~\ref{sect:core-progs} would you use
+in order to check that the new instructions and compiler work?
+\end{exercise}
+
+\section{Mark 5: Towards better handling of
+arithmetic\index{arithmetic!optimised, in G-machine}} \label{gm:ss:Escheme}
+
+The way the G-machine is implemented at the moment, each arithmetic
+operator is called via one of the compiled primitives. We can
+improve on this arrangement by observing that often we can call the
+arithmetic operator directly. For example, consider the following
+simple program:
+\begin{verbatim}
+	main = 3+4*5
+\end{verbatim}
+This generates the following code when we use the current compiler:
+\begin{verbatim}
+	[Pushint 5, Pushint 4, Pushglobal "*", Mkap, Mkap,
+	 Pushint 3, Pushglobal "+", Mkap, Mkap, Eval]
+\end{verbatim}
+When executed this code will take 33 steps and use 11 heap nodes. Our
+first thought must surely be that we can use the instructions @Add@
+and @Mul@ in place of calls to the functions `@+@' and `@*@'. This
+leads to the following improved code:
+\begin{verbatim}
+	[Pushint 5, Pushint 4, Mul, Pushint 3, Add]
+\end{verbatim}
+This will take only five steps to execute and uses five heap nodes.
+
+\subsection{A problem}
+
+A possible problem arises when we consider our next example program.
+\begin{verbatim}
+	main = K 1 (1/0)
+\end{verbatim}
+This generates the following code:
+\begin{verbatim}
+	[Pushint 0, Pushint 1, Pushglobal "/", Mkap, Mkap,
+	 Pushint 1, Pushglobal "K", Mkap, Mkap, Eval]
+\end{verbatim}
+
+If we follow the pattern of the previous example we might try
+generating the code:
+\begin{verbatim}
+	[Pushint 0, Pushint 1, Div,
+	 Pushint 1, Pushglobal "K", Mkap, Mkap, Eval]
+\end{verbatim}
+The problem is that the division operator is applied {\em before\/} we
+reduce @K@, with the result that a {\em division-by-zero
+error\/}\index{division-by-zero error} is generated.  A correct compiler
+must generate code that will not give such errors.
+
+What has happened is that our code is too strict.  The code is
+evaluating expressions that it need not -- which results in errors
+arising where they should not. A similar problem will also arise when
+{\em non-terminating expressions\/}\index{non-termination of evaluation}
+are inadvertently evaluated.
+
+\subsection{The solution}
+
+The solution to the problem is to keep track of the context in which
+an expression appears. We will distinguish two
+contexts\index{compilation context}\footnote{It is possible to
+distinguish more contexts. Projection analysis \cite{Wadler:87} and
+evaluation transformers \cite{BURN91:book} are two ways to do this.}:
+\begin{description}
+\item[Strict\index{compilation context!strict}] The value of the expression will
+be required in WHNF.
+\item[Lazy\index{compilation context!lazy}] The value of the expression may or
+may not be required in WHNF.
+\end{description}
+
+Corresponding to each context, we have a compilation scheme which will
+compile an expression to a sequence of G-machine instructions. In the
+strict context this compilation scheme is the \tE{} scheme; in the lazy
+context we will use the \tC{} scheme we have seen already.
+
+We would like to find as many strict contexts as possible, since these
+contexts allow us to generate better code. We make the following
+observation: whenever a supercombinator is instantiated it is because
+we wish to evaluate its value to WHNF. From this we conclude that the
+body of a supercombinator can always be evaluated in a strict context.
+There are also expressions where we know that some sub-expressions
+will be evaluated to WHNF if the expression is evaluated to WHNF.
+
+The class of strict context expressions can be described recursively.
+\begin{itemize}
+\item The expression in the body of a supercombinator definition is
+in a strict context.
+\item If $e_0~\odot~e_1$ occurs in a strict context, where $\odot$ is
+an arithmetic or comparison operator, then the expressions $e_0$ and
+$e_1$ are also in a strict context.
+\item If $@negate@~e$ occurs in a strict context, then the expression
+$e$ also does.
+\item If the expression $@if@~e_0~e_1~e_2$ occurs in a strict context, then so do the
+expressions $e_0$, $e_1$, and $e_2$.
+\item If $@let(rec)@~\Delta~@in@~e$ occurs in a strict context then
+the expression $e$ is also in a strict context.
+\end{itemize}
+
+An example should make this clear; consider the body of the
+supercombinator @f@:
+\begin{verbatim}
+	f x y = (x+y) + g (x*y)
+\end{verbatim}
+Both @(x+y)@ and @g (x*y)@ will be evaluated in a strict context --
+because the body of the supercombinator is. In the first case this
+causes @x@ and @y@ to be evaluated in a strict context -- because @+@
+propagates the strict context. In the second expression, the presence
+of a user-defined supercombinator means that the sub-expression @x*y@
+will be compiled assuming that the expression may not be evaluated.
+
+This suggests that we can implement the strict-context compiler, \tE{},
+in a recursive manner.  Because the body of each supercombinator is
+evaluated in a strict context we will need to call the \tE{} scheme
+function from the \tR{} scheme. This satisfies the
+first of the points above. To propagate the context information into
+sub-expressions we will recursively invoke the \tE{} scheme
+for arithmetic expressions.
+
+The new compiler schemes are defined in Figure~\ref{gm:fg:schemes5.re}.
+\begin{figure*} %\centering
+$\begin{array}{|rcll|} \hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\R{e}~\rho~d$ generates code
+which instantiates the expression $e$ in environment $\rho$, for a
+supercombinator of arity $d$, and then proceeds to unwind the
+resulting stack.}}\\ &&&\\
+\R{e}\ \rho~d & = & \E{e}\ \rho
+		\append [@Update@\ d, @Pop@\ d, @Unwind@] &\\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\E{e}~\rho$ compiles code that evaluates an expression $e$ to WHNF in
+environment $\rho$, leaving a pointer to the expression on top of the stack.}}\\
+&&&\\
+\E{i}\ \rho     & = & [@Pushint@\ i] &\\
+\multicolumn{4}{|l|}{%
+\E{@let@~ x_1@=@e_1@;@~\ldots@;@~ x_n @=@ e_n ~@in@~ e}~ \rho} \\
+ & = & \C{e_1}~ \rho^{+0} \append \ldots \append &\\
+    &&  \C{e_n}~\rho^{+(n-1)} \append & \\
+    &&  \E{e}~\rho' \append [@Slide@~ n]&\\
+    &&\multicolumn{2}{r|}{%
+\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}}\\
+%
+\multicolumn{4}{|l|}{%
+\E{@letrec@~ x_1@=@e_1@;@~\ldots@;@~ x_n @=@ e_n ~@in@~ e}~ \rho} \\
+ & = & [@Alloc@~ n] \append & \\
+    &&\C{e_1}~ \rho' \append [@Update@\ n-1]\append \ldots \append &\\
+		 &&       \C{e_n}~\rho' \append [@Update@\ 0] \append &\\
+	       &&         \E{e}~\rho' \append [@Slide@~ n] &\\
+    &&\multicolumn{2}{r|}{%
+	\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}}\\
+\E{e_0~@+@~e_1}~ \rho& = & \E{e_1}~\rho\append\E{e_0}~ \rho^{+1}
+						     \append [@Add@] &\\
+\multicolumn{4}{|r|}{\tr{And similarly for other arithmetic and comparison expressions}}\\
+\E{@negate@ ~ e}~ \rho& = & \E{e}~ \rho \append [@Neg@] &\\
+\E{@if@~e_0~e_1~e_2}~ \rho& = & \E{e_0}~\rho \append
+		[@Cond@\ (\E{e_1}~\rho)\ (\E{e_2}~\rho)] &\\
+\E{e}\ \rho     & = & \C{e}\ \rho \append [@Eval@] &
+\tr{the default case}\\
+&&&\\
+\hline
+\end{array}$
+\caption{The \tR{} and \tE{} compilation schemes for the Mark~5 machine}
+\label{gm:fg:schemes5.re}
+\end{figure*}
+
+To make it easier to extend the set of built-in operators that can be compiled
+using the new scheme, we define @builtInDyadic@.
+
+M5-> builtInDyadic :: assoc name instruction
+GH5-> builtInDyadic :: ASSOC Name Instruction
+5-> builtInDyadic
+5-> 	= 	[("+", Add), ("-", Sub), ("*", Mul), ("div", Div),
+5->    		 ("==", Eq), ("~=", Ne), (">=", Ge),
+5->    		 (">",  Gt), ("<=", Le), ("<",  Lt)]
+
+\begin{exercise}\label{gm:X:compiler5}
+Modify the existing compiler functions @compileR@ and @compileE@ so
+that they implement the \tR{} scheme and \tE{} scheme of
+Figure~\ref{gm:fg:schemes5.re}. You should use @builtInDyadic@.
+\end{exercise}
+
+Occasionally the machine will fail when the new compiler is used.
+What we need is to introduce a new rule for the @Unwind@ instruction.
+
+\gmruled%
+{\gmstated{[@Unwind@]}{[a_0,\,\ldots,\, a_k]}{\langle i,\, s\rangle:d}%
+{h[a_0: @NGlobal@\ n\ c]}{m}}%
+{\gmstated{i}{a_k : s}{d}{h}{m\mbox{ when $k<n$}}}
+
+This allows us to use @Eval@ to evaluate any object to WHNF, and not just
+numbers.
+
+\begin{exercise}\label{gm:X:unwind5}
+Implement the new transition for @Unwind@.
+Write a program that fails without the new @Unwind@ transition.
+\end{exercise}
+
+\begin{exercise}\label{gm:X:compiler45}
+Compare the execution of the example program used at the start of this
+section, with its execution on the Mark~4 machine.
+\begin{verbatim}
+main = 3+4*5
+\end{verbatim}
+Try some other programs from Appendix~\ref{sect:core-progs}.
+\end{exercise}
+
+The way we implemented the strict context in the compiler is addis
+simple example of the {\em inherited
+attributes\/}\index{inherited attributes} from compiler theory. If we
+regard the strict context as an attribute of an expression, then a
+sub-expression {\em inherits\/} its strict context from its parent
+expression. The general theory is discussed in \cite{Dragon}.
+
+It is unfortunately not possible -- in general -- to determine at
+compile-time whether an expression should be compiled with a strict
+context. We therefore have to accept a compromise.  In this book we
+have only treated a limited set of expressions -- the arithmetic
+expressions -- in a special way. Much active research is concerned
+with extending this analysis to cover more general expressions
+\cite{BURN91:book}.
+
+
+\section{Mark 6: Adding data structures\index{data structures!in G-machine Mark 6}}
+\label{gm:ss:mark6}
+
+In this section we extend the G-machine to deal with arbitrary data
+structures. As discussed in Chapter~\ref{sect:language}, two new
+Core-language constructs are required for programs involving data
+structures: {\em constructors}\index{constructors!in G-machine},
+@EConstr@; and {\em case expressions}\index{case expressions!in
+G-machine}, @ECase@. Our goal, in producing the Mark~6 machine, is to
+compile code for these expressions.
+
+\subsection{Overview}
+
+In Section~\ref{sect:lang:constructors} we saw that a constructor with
+tag @t@ and arity @a@ was represented as @Pack{t,a}@ in the core
+language. For example, the usual list data type has two constructors:
+@Pack{1,0}@ and @Pack{2,2}@. These correspond to Miranda's $[]$ and
+$(:)$ respectively.
+
+A @case@ expression, which has no direct counterpart in Miranda, is
+used to inspect the values held in a constructor. For example, we
+can write the length function for a list as:
+\begin{verbatim}
+length xs = case xs of
+		   <1>      -> 0;
+		   <2> y ys -> 1 + length ys
+\end{verbatim}
+It is instructive to look at the way we execute the @case@ expression
+\begin{enumerate}
+
+\item To evaluate the @case@ expression, we first evaluate @xs@ to
+WHNF.  
+% The expression @xs@ is called the {\em
+% discriminant}\index{discriminant!of @case@ expression} of the
+% @case@ expression.
+
+\item Once this evaluation has occurred, we are able to tell which of
+the {\em alternatives\/}\index{alternative!of @case@ expression} to
+take. The {\em tag\/}\index{tag!of constructor} of the evaluated
+expression -- which must be a structured data object -- determines
+which alternative we take. In the above example, for @length@:
+
+\begin{itemize}
+
+\item If the tag of the constructor for @xs@ is @1@ then the list is
+empty and we take the first branch. We therefore return @0@.
+
+\item If the tag is @2@, then the list is non-empty. This time there
+are components of the constructor (@y@ and @ys@). The length of
+the list is one more than the length of @ys@.
+\end{itemize}
+\end{enumerate}
+We will assume that whenever we attempt to dismantle a constructor it
+has been applied to the correct number of arguments. A constructor in
+this state is said to be {\em saturated}\index{saturated constructor}.
+As an example, in Section~\ref{sect:structured-types}, @Cons@ is
+defined to take two arguments, so it is saturated when it is applied
+to two expressions.
+
+We also note that a Core-language program can now return a result that
+is a structured data object. The Mark~5 G-machine must be able to
+print the structured data object in a lazy fashion. Let us first
+consider what additions will need to be made to the data structures of
+the Mark~5 machine.
+
+\subsection{Data structures\index{data structures!G-machine Mark 6}}
+
+It would be nice to allow the machine to return values which are not
+just numbers. We would like to be able to return values that consist
+of constructors. This will require us to evaluate the components of
+the structure recursively, and then return these values. To do this we
+need to add yet another component to the state: @gmOutput@. This will
+hold the result of the program.
+
+M6> gmState == (gmOutput,          || Current output
+M6>             gmCode,            || Current instruction stream
+M6>             gmStack,           || Current stack
+M6>             gmDump,            || Current dump
+M6>             gmHeap,            || Heap of nodes
+M6>             gmGlobals,         || Global addresses in heap
+M6>             gmStats)           || Statistics
+GH6> type GmState =
+GH6> 	(GmOutput,		-- Current Output
+GH6> 	 GmCode,		-- Current Instruction Stream
+GH6>	 GmStack,		-- Current Stack
+GH6>	 GmDump,		-- The Dump
+GH6> 	 GmHeap,		-- Heap of Nodes
+GH6> 	 GmGlobals,		-- Global addresses in Heap
+GH6> 	 GmStats)		-- Statistics
+
+This component is defined to be a character string.
+
+M6-> gmOutput == [char]
+GH6-> type GmOutput = [Char]
+
+\par
+We can write the access functions in the obvious way.
+
+M6> getOutput :: gmState -> gmOutput
+GH6> getOutput :: GmState -> GmOutput
+6> getOutput (o, i, stack, dump, heap, globals, stats) = o
+
+M6> putOutput :: gmOutput -> gmState -> gmState
+GH6> putOutput :: GmOutput -> GmState -> GmState
+6> putOutput o' (o, i, stack, dump, heap, globals, stats)
+6> 	= (o', i, stack, dump, heap, globals, stats)
+
+\begin{exercise}\label{gm:X:access5}
+Make the appropriate changes to the remainder of the access functions.
+\end{exercise}
+
+To support constructor nodes in the heap, we augment the type @node@
+with @NConstr@; this takes a positive number which will represent a
+{\em tag}\index{tag!of constructor}, and a list of {\em
+components}\index{components!of constructor} which we represent as the
+list of the addresses of the nodes in heap.
+
+M6-> node ::= NNum num             || Numbers
+M6->          | NAp  addr addr     || Applications
+M6->          | NGlobal num gmCode || Globals
+M6->          | NInd addr          || Indirections
+M6->          | NConstr num [addr] || Constructors
+GH6-> data Node
+GH6->		= NNum Int              -- Numbers
+GH6->		| NAp Addr Addr         -- Applications
+GH6->		| NGlobal Int GmCode    -- Globals
+GH6->		| NInd Addr
+GH6->		| NConstr Int [Addr]
+GH6-> instance Eq Node
+GH6->   where
+GH6->   NNum a       == NNum b          = a == b    -- needed to check conditions
+GH6->   NAp a b      == NAp c d         = False     -- not needed
+GH6->   NGlobal a b  == NGlobal c d     = False     -- not needed
+GH6->   NInd a       == NInd b          = False     -- not needed
+GH6->   NConstr a b  == NConstr c d     = a == c && b == d
+GH6->   _            == _               = False
+
+\subsection{Printing the result}
+
+Because we have a new state component which we wish to display, we
+must redefine the function @showState@.
+
+M6> showState :: gmState -> iseq
+GH6> showState :: GmState -> Iseq
+6> showState s
+6> 	= iConcat [showOutput s,                 iNewline,
+6>            	showStack s,                  iNewline,
+6>            	showDump s,                   iNewline,
+6>            	showInstructions (getCode s), iNewline]
+
+The @showOutput@ function is easy, because the output component is already a
+string.
+
+M6-> showOutput :: gmState -> iseq
+GH6-> showOutput :: GmState -> Iseq
+6-> showOutput s = iConcat [iStr "Output:\"", iStr (getOutput s), iStr "\""]
+
+\par
+The only other change (apart from changing @showInstruction@ for the new
+instruction set) occurs in @showNode@, because we have extended the data type
+to include constructor nodes.
+
+M6-> showNode :: gmState -> addr -> node -> iseq
+GH6-> showNode :: GmState -> Addr -> Node -> Iseq
+6-> showNode s a (NNum n)      = iNum n
+6-> showNode s a (NGlobal n g) = iConcat [iStr "Global ", iStr v]
+M6->	where v = hd [n | (n,b) <- globals; a=b]
+M6->          globals = getGlobals s
+GH6->	where v = head [n | (n,b) <- getGlobals s, a==b]
+6-> showNode s a (NAp a1 a2)   = iConcat [iStr "Ap ",  iStr (showaddr a1),
+6->                                       iStr " ",    iStr (showaddr a2)]
+6-> showNode s a (NInd a1)     = iConcat [iStr "Ind ", iStr (showaddr a1)]
+6-> showNode s a (NConstr t as)
+6->  = iConcat [iStr "Cons ", iNum t, iStr " [",
+6->             iInterleave (iStr ", ") (map (iStr.showaddr) as), iStr "]"]
+
+\subsection{The instruction set}
+
+The new instruction set is now defined. It simply adds four new instructions to
+the Mark~4 machine.
+
+M6> instruction ::= Slide num
+M6>                 | Alloc num
+M6>                 | Update num
+M6>                 | Pop num
+M6>                 | Unwind
+M6>                 | Pushglobal name
+M6>                 | Pushint num
+M6>                 | Push num
+M6>                 | Mkap
+M6>                 | Eval
+M6>                 | Add | Sub | Mul | Div
+M6>                 | Neg
+M6>                 | Eq | Ne | Le | Lt | Ge | Gt
+M6>                 | Cond gmCode gmCode
+GH6> data Instruction 
+GH6>	= Slide Int
+GH6>	| Alloc Int
+GH6> 	| Update Int
+GH6>	| Pop Int
+GH6>	| Unwind
+GH6>	| Pushglobal Name
+GH6>	| Pushint Int
+GH6>	| Push Int
+GH6>	| Mkap
+GH6>	| Eval
+GH6>	| Add | Sub | Mul | Div
+GH6>	| Neg
+GH6>	| Eq | Ne | Lt | Le | Gt | Ge
+GH6>	| Cond GmCode GmCode
+
+The four new instructions that are added to the machine are as follows:
+
+M6>                 | Pack num num
+M6>                 | Casejump [(num,gmCode)]
+M6>                 | Split num
+M6>                 | Print
+GH6>	| Pack Int Int
+GH6>	| Casejump [(Int, GmCode)]
+GH6>	| Split Int
+GH6>	| Print
+
+\begin{exercise}\label{gm:X:showInstruction5}
+Extend @showInstruction@ to match the new instruction set.
+\end{exercise}
+
+The @Pack@ instruction is simple; it assumes that there are
+sufficient arguments on the stack to construct a {\em saturated
+constructor}\index{saturated constructor}.  When there are, it
+proceeds to make a saturated constructor; if there are not enough
+arguments, then the instruction is undefined.
+
+\gmruleod%
+{\gmstateod{o}{@Pack@\ t\ n:i}{a_1:\ldots:a_n:s}{d}{h}{m}}%
+{\gmstateod{o}{i}{a:s}{d}{h[a:@NConstr@\ t [a_1,\ldots,a_n]]}{m}}
+
+The transition rule for @Casejump@ expects (a) that the node
+on top of the stack is in WHNF, and (b) that
+the node is a structured data object. Using the tag from this
+object we select one of the alternative instruction sequences, and
+the current instruction stream is then prefixed by the code for the
+particular alternative selected.
+
+\gmruleod%
+{\gmstateod{o}{@Casejump@\ [\ldots, t@->@i', \ldots ]:i}{a:s}{d}{h[a:@NConstr@\ t\ ss]}{m}}%
+{\gmstateod{o}{i'\append i}{a:s}{d}{h}{m}}
+
+This is a simple way to specify a multiway jump and join. That is, by
+prefixing the current code $i$ by the code for the alternative $i'$,
+we achieve the effect of first running the code for the alternative
+and then resuming with whatever the remainder of the code for the main
+expression requires\footnote{It should be noted that code sequences
+using @Casejump@ are not flat. We can, however, construct the flat
+code sequences we desire by labelling each alternative and jumping to
+the labelled code addresses. We have not done this as it unnecessarily
+complicates the code generation.}.
+
+The code for each alternative begins with a $@Split@\ n$ instruction
+and terminates with a $@Slide@\ n$ instruction. The value of $n$ is
+determined by the number of components in the constructor. The @Split@
+instruction is used to gain access to the components of a constructor.
+
+Consider the code sequence generated for the @length@ function:
+\begin{verbatim}
+       [Push 0, Eval,
+	Casejump [1 -> [Pushint 0]
+		  2 -> [Split 2, Push 1, Pushglobal "length", Mkap,
+                        Eval, Pushint 1, Add, Slide 2]],
+	Update 1,
+	Pop 1,
+	Unwind]
+\end{verbatim}
+The execution of this pattern is shown in Figure~\ref{gm:fg:6alter},
+where we see that the @Slide@ and @Split@ instructions are being used
+temporarily to extend the current set of local bindings. Assuming that
+the @length@ function was applied to a non-nil node, when we execute
+the @Casejump@ instruction, we take the alternative labelled @2@. This
+is the initial diagram (a). The
+@Split 2@ instruction `unpacks' the constructor node onto the stack.
+This is shown in diagram (b). After completing the body of
+the alternative, i.e.\ the code sequence
+\begin{verbatim}
+	[Push 1, Pushglobal "length", Mkap, Eval, Pushint 1, Add]
+\end{verbatim}
+the length of the list argument to this call of @length@ will be on
+top of the stack labelled @l@ in diagram (c).  To
+complete the execution we remove the pointers to @head@ and @tail@;
+this is shown in diagram (d).
+\begin{figure} %\centering
+\input{gm_alter}
+\caption{Running compiled code for alternatives}\label{gm:fg:6alter}
+\end{figure}
+The transition for @Split@ is straightforward.
+
+\gmruleod%
+{\gmstateod{o}{@Split@\ n:i}{a:s}{d}{h[a:@NConstr@\ t\ [a_1,\ldots, a_n]]}{m}}%
+{\gmstateod{o}{i}{a_1:\ldots :a_n:s}{d}{h}{m}}
+
+Next, we describe the transitions for @Print@. There are two
+transitions for @Print@; one each for constructors and numbers.
+
+\gmruleod%
+{\gmstateod{o}{@Print@:i}{a:s}{d}{h[a:@NNum@\ n]}{m}}%
+{\gmstateod{o\append [n]}{i}{s}{d}{h}{m}}
+
+The rule for constructors is more complex, as it must arrange to print
+each component of the constructor. For simplicity we will only print
+out the components.
+
+\gmruleod%
+{\gmstateod{o}{@Print@:i}{a:s}{d}{h[a:@NConstr@\ t\ [a_1,\ldots, a_n]]}{m}}%
+{\gmstateod{o}{i' \append i}{a_1:\ldots :a_n:s}{d}{h}{m}}
+
+The code $i'$ is simply:
+\[ [\underbrace{@Eval@,\ @Print@, \ldots, @Eval@,\ @Print@}_n ].\]
+
+Lastly, we must add a new rule for @Unwind@, that tells it to return
+when unwinding an @NConstr@, just like the rule for @NNum@.
+\gmruled%
+{\gmstated{[@Unwind@]}{a:s}{\langle i',\,s'\rangle:d}{h[a: @NConstr@\ n\ as]}{m}}%
+{\gmstated{i'}{a:s'}{d}{h}{m}}
+
+\begin{exercise}\label{gm:X:step6}
+Implement the new transitions and modify the @dispatch@ function.
+\end{exercise}
+
+\subsection{The compiler\index{G-machine compiler!Mark 6}}
+
+In Figure~\ref{gm:fg:CE6} the new cases for the \tE{}~and~\tC{}
+compilation schemes are presented.  They require auxiliary compilation
+schemes, \tD{} and \tA{}, to deal with the alternatives that may be
+selected in a @case@ expression. The function @compileAlts@
+(corresponding to the \tD{} scheme) compiles a list of alternatives,
+using the current environment, and produces a list of tagged code
+sequences. It also uses the @comp@ argument (which corresponds to
+\tA{}) to compile the body of each of the alternatives. For the moment
+this argument will always be @compileE'@.
+\begin{figure*}
+$\begin{array}{|rcll|}
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\E{e}~\rho$ compiles code that evaluates an expression $e$ to WHNF in
+environment $\rho$, leaving a pointer to the expression on top of the
+stack.}}\\
+&&&\\
+\E{@case@~ e ~@of@~ alts}~ \rho & = & \E{e}~\rho \append
+					 [@Casejump@\ \D{alts}\ \rho] & \\
+\E{@Pack{@t@,@a@}@~e_1~\ldots~e_a}~\rho & = & \C{e_a}~\rho^{+0} \append\ldots
+			  \C{e_1}~\rho^{+(a-1)}\append [@Pack@\ t\ a] &\\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\C{e}~\rho$ generates code which constructs the graph of $e$ in environment
+$\rho$, leaving a pointer to it on top of the stack.}}\\
+&&&\\
+\C{@Pack{@t@,@a@}@~e_1~\ldots~e_a}~\rho & = & \C{e_a}~\rho^{+0}\append\ldots
+			  \C{e_1}~\rho^{+(a-1)}\append [@Pack@\ t\ a] &\\
+&&&\\
+\hline
+%
+% Two figures combined here by Simon 5/11/91
+%
+%\end{array}$
+%\caption{New cases for the Mark~6 \tC{} and \tE{} schemes}\label{gm:fg:CE6}
+%\end{figure*}
+%\begin{figure*}[htbp]
+%$\begin{array}{|rcll|}
+%\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\D{alts}~\rho$ compiles the code for the alternatives in a @case@ expression.}}
+\\
+&&&\\
+\D{alt_1~ \ldots ~alt_n}~\rho
+& = & [\A{alt_1}~\rho~, \ldots ,~ \A{alt_n}~\rho] & \\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\A{alt}~\rho$ compiles the code for an alternative in a @case@ expression.}}\\
+&&&\\
+\A{ @<@ t @>@~x_1 \ldots x_n~@->@~body}~\rho
+& = & t~ @->@ ~[@Split@\ n] \append \E{body}~\rho' \append [@Slide@\ n] &\\
+\multicolumn{4}{|r|}{%
+\tr{where $\rho' = \rho^{+n}[x_1\mapsto 0\ldots x_n\mapsto n-1]$}}\\
+&&&\\
+\hline
+\end{array}$
+\caption{Compilation schemes for @case@ expressions}\label{gm:fg:CE6}
+%\caption{The \tD{} and \tA{} compilation schemes}\label{gm:fg:DA6}
+\end{figure*}
+
+M6-> compileAlts :: (num -> gmCompiler) || compiler for alternative bodies
+M6->                -> [coreAlt]        || the list of alternatives
+M6->                -> gmEnvironment    || the current environment
+M6->                -> [(num, gmCode)]  || list of alternative code sequences
+GH6-> compileAlts ::	(Int -> GmCompiler)	-- compiler for alternative bodies
+GH6-> 			-> [CoreAlt]		-- the list of alternatives
+GH6->			-> GmEnvironment	-- the current environment
+GH6->			-> [(Int, GmCode)]	-- list of alternative code sequences
+6-> compileAlts comp alts env
+M6-> 	= [(tag, comp (#names) body (zip2 names [0..] ++ argOffset (#names) env))
+GH6->  = [(tag, comp (length names) body (zip names [0..] ++ argOffset (length names) env))
+6->          | (tag, names, body) <- alts]
+
+\par
+The @compileE'@ scheme is a small modification to the @compileE@
+scheme. It simply places a @Split@ and @Slide@ around the code
+generated by the ordinary @compileE@ scheme.
+
+M6-> compileE' :: num -> gmCompiler
+GH6-> compileE' :: Int -> GmCompiler
+6-> compileE' offset expr env
+6-> 	= [Split offset] ++ compileE expr env ++ [Slide offset]
+
+\begin{exercise}
+Make the relevant changes to @compile@, and modify @initialCode@ 
+to have a final @Print@ instruction.
+\end{exercise}
+
+\begin{exercise}
+Add the new cases to the compiler functions @compileE@ and
+@compileC@.
+\end{exercise}
+
+\begin{exercise}
+What changes are required to print out the output in `structured
+form'. By this we mean placing the constructors and parentheses into
+the output component @gmOutput@, as well as integers.
+\end{exercise}
+
+\subsection{Using the new boolean representation in
+comparisons\index{booleans!using constructors}}
+
+In this section we show how the Mark~6 machine we have constructed,
+can be modified to use our new representation of booleans\index{booleans}. We first
+observe that we can implement the booleans as structured data objects;
+with @True@ and @False@ being represented as constructors of zero
+arity and tags 2 and 1 respectively.
+
+How do we implement conditionals? This can be done by adding a new
+definition to the program for @if@. It returns either its second or
+third argument, depending on the first argument.
+\begin{verbatim}
+	if c t f = case c of
+			<1> -> f;
+			<2> -> t
+\end{verbatim}
+The first change we require lies in the comparison operations. These
+have the following generic transition rule.
+
+\gmruleod%
+{\gmstateod{o}{\odot :i}{a_0:a_1:s}{d}%
+{h[a_0: @NNum@\ n_0,\,a_1: @NNum@\ n_1]}{m}}%
+{\gmstateod{o}{i}{a:s}{d}{h[a: @Constr@\ (n_0\,\odot\, n_1)\ []]}{m}}
+%
+For example, in the @Eq@ instruction, we replace $\odot$ with a
+function that returns @2@ (the tag for @True@) if the two numbers
+$n_0$ and $n_1$ are the same, and @1@ (the tag for @False@) otherwise.
+
+We can implement the transitions quickly, by reusing some of the code
+we developed for the Mark~4 machine. In Section~\ref{gm:sc:inst4} we
+saw how to represent some generic arithmetic and comparison operators.
+In fact, because of the way in which we structured the definition of
+the @comparison@ function, we can almost immediately use our new
+representation of booleans.
+
+The boxing function @boxBoolean@ takes a comparison operation and a
+state in which there are two integers on top of the stack. It returns
+the new state in which there is the boolean result of comparing the
+two integers on top of the stack.
+
+M6-7> boxBoolean :: bool -> gmState -> gmState
+GH6-7> boxBoolean :: Bool -> GmState -> GmState
+6-7> boxBoolean b state
+M6-7> = putStack (a: getStack state) (putHeap h' state)
+M6-7>   where (h',a) = hAlloc (getHeap state) (NConstr b' [])
+M6-7>         b' = 2, b			|| 2 is tag of True
+M6-7>            = 1, otherwise		|| 1 is tag of False
+GH6-7>  = putStack (a: getStack state) (putHeap h' state)
+GH6-7>    where (h',a) = hAlloc (getHeap state) (NConstr b' [])
+GH6-7>          b' | b = 2		-- 2 is tag of True
+GH6-7>             | otherwise = 1	-- 1 is tag of False
+
+\begin{exercise}\label{gm:X:fac6}
+Run some example programs from Appendix~\ref{sect:core-progs}; for
+example try the factorial program:
+\begin{verbatim}
+	fac n = if (n==0) 1 (n * fac (n-1))
+\end{verbatim}
+\end{exercise}
+
+\subsection{Extending the language accepted}
+
+As astute readers might have noticed, there are some legal expressions
+involving @ECase@ and @EConstr@ for which our compiler will fail. The
+legal expressions that we cannot compile fall into two classes:
+\begin{enumerate}
+\item Occurrences of @ECase@ in non-strict contexts; i.e.\ in
+expressions compiled by the \tC{} scheme.
+
+\item Occurrences of @EConstr@ in expressions where it is applied to
+too few arguments.
+\end{enumerate}
+Both problems can be solved by using program transformation
+techniques. The solution for @ECase@ is to make the offending
+expressions into supercombinators which are then applied to their free
+variables. For example, the program:
+\begin{verbatim}
+	f x = Pack{2,2} (case x of <1> -> 1; <2> -> 2) Pack{1,0}
+\end{verbatim}
+can be transformed into the equivalent program:
+\begin{verbatim}
+	f x = Pack{2,2} (g x) Pack{1,0}
+	g x = case x of <1> -> 1; <2> -> 2
+\end{verbatim}
+The trick for @EConstr@ is to create a supercombinator for each
+constructor; this will be generated with enough free variables to
+saturate the constructor. Here is an example.
+\begin{verbatim}
+	prefix p xs = map (Pack{2,2} p) xs
+\end{verbatim}
+This is transformed to:
+\begin{verbatim}
+	prefix p xs = map (f p) xs
+	f p x = Pack{2,2} p x
+\end{verbatim}
+
+Another way to solve this problem is to modify the @Pushglobal@
+instruction, so that it will work for functions with names of the
+form: `@Pack{t,a}@'. We can then simply look for constructor functions,
+such as @f@ in the example above, in the @globals@ component of the
+state.  If the function is not already present, we can create a new
+global node to associate with the function because the node has a
+particularly simple structure.
+\begin{verbatim}
+	NGlobal a [Pack t a, Update 0, Unwind]
+\end{verbatim}
+The new transitions are, firstly, if the function exists already:
+
+\gmruleod%
+{\gmstateod{o}{@Pushglobal Pack{@t@,@n@}@ :i}{s}{d}{h}{m[@Pack{@t@,@n @}@ :a]}}%
+{\gmstateod{o}{i}{a:s}{d}{h}{m}}
+%
+and secondly when it does not already exist:
+
+\gmruleod%
+{\gmstateod{o}{@Pushglobal Pack{@t@,@n@}@ :i}{s}{d}{h}{m}}%
+{\gmstateod{o}{i}{a:s}{d}{h[a:\ @gNode@_{t,n}]}{m[@Pack{@t@,@n@}@ :a]}}
+where $@gNode@_{t,n}$ is
+\[
+@NGlobal@\ n\ [@Pack@\ t\ n,\ @Update@\ 0,\ @Unwind@]
+\]
+Our compiler can then generate code for expressions with unsaturated
+constructor nodes directly. It does this by generating the following
+code for unsaturated constructors.
+\[
+\C{@Pack{@ t @,@ a @}@ }~\rho = [@Pushglobal@\ @"Pack{@ t @,@ a @}"@]
+\]
+
+\begin{exercise}\label{gm:X:6consext}
+Implement the extensions to the @pushglobal@ function for the
+@Pushglobal@ instruction and modify the compiler.
+\end{exercise}
+
+\section{Mark 7: Further
+improvements\index{G-machine!Mark 7}\index{value stack!in G-machine}}
+\label{sect:v-stack}
+
+Let us consider again the example program we saw when we developed the
+Mark~5 compiler.
+\begin{verbatim}
+	main = 3+4*5
+\end{verbatim}
+This generates the following code when we use the Mark~6 compiler:
+\begin{verbatim}
+	[Pushint 5, Pushint 4, Mul, Pushint 3, Add]
+\end{verbatim}
+When executed this code will use five heap nodes. Is it possible to
+reduce this still further?
+
+The answer is yes. We can reduce the number of heap accesses for
+arithmetic further by using a stack of numbers to represent
+intermediate values in the computation. In the Mark~7 machine these
+values are held in a new state component called the {\em
+V-stack}\index{V-stack}. The problem is that placing numbers into the
+heap or extracting them is an expensive operation on a real machine.
+It is much more efficient to use the machine's register set or
+stack. In the Mark~7 G-machine we will use a stack; this means that we
+do not have to worry about running out of registers.
+
+The new code for the program
+\begin{verbatim}
+	main = 3+4*5
+\end{verbatim}
+is very similar to that which we previously generated:
+\begin{verbatim}
+	[Pushbasic 5, Pushbasic 4, Mul, Pushbasic 3, Add, Mkint]
+\end{verbatim}
+The first instruction @Pushbasic 5@ places @5@ on top of the V-stack.
+Next we push @4@ onto the V-stack, following this by a multiplication.
+This instruction now expects its arguments to be in the V-stack. It
+will place the answer into the V-stack as well. The next two
+instructions add @3@ to the value on top of the V-stack. The final
+instruction, @Mkint@, takes the value on top of the V-stack and places
+it into a number node in the heap, leaving a pointer to this new node
+on top of the S-stack.
+
+\subsection{Executing the factorial function using the V-stack}
+
+We begin an investigation into the Mark~7 machine, by way of an
+example.  We will be looking at the execution of the factorial
+function, defined as follows:
+\begin{verbatim}
+	fac n = if (n==0) 1 (n * fac (n-1))
+\end{verbatim}
+Using the Mark~7 compiler, we will generate the following code
+sequence for the body of the supercombinator.
+\begin{verbatim}
+[Pushbasic 0, Push 0, Eval, Get, Eq,
+ Cond [Pushint 1, Update 1, Pop 1, Unwind]
+      [Pushint 1, Push 1, Pushglobal "-", Mkap, Mkap, Pushglobal "fac", Mkap,
+       Eval, Get, Push 0, Eval, Get, Mul, Mkint, Update 1, Pop 1, Unwind]
+\end{verbatim}
+
+When this code commences execution, the V-stack is empty, and there is
+one item on the ordinary stack. We will call the latter the S-stack
+from now on to distinguish the two sorts of stack. In
+Figure~\ref{gm:fg:7fac1} -- starting with diagram (a) --
+we see the initial state in which a pointer to the argument to @fac@
+is on top of the S-stack. In diagram (b) we see what happens when a
+@Pushbasic@ instruction is executed: an integer is pushed onto the
+V-stack. Diagram (c)
+shows that the argument to @fac@ has now been evaluated, whilst in
+diagram (d) we see the effect of a @Get@
+instruction. It has extracted the value from the node in the heap, and
+placed it into the V-stack.
+\begin{figure}
+\input{gm_v1}
+\caption{Mark~7 machine running @fac@}\label{gm:fg:7fac1}
+\end{figure}
+
+In diagram (e) (Figure~\ref{gm:fg:7fac2}) we see the state
+after an @Eq@ instruction has executed. It has compared the two items
+in the V stack, and discovered that they are not equal. The Mark~7
+G-machine represents the boolean value @False@ by @1@ in the V-stack.
+In diagram (f), the @Cond@ instruction has inspected this
+value, and used it to select which branch to execute.
+%\begin{figure}[htbp]
+\begin{figure}
+\input{gm_v2}
+\caption{Mark~7 machine running @fac@}\label{gm:fg:7fac2}
+\end{figure}
+
+In diagram (g) (Figure~\ref{gm:fg:7fac3}) the state after
+the construction and evaluation of @fac (1-1)@ is shown. The next
+instruction is @Get@ which fetches the newly evaluated value into the
+V stack. Diagram (i) shows that we evaluate and fetch the value
+from the node @1@ into the V-stack. In diagram (j) a @Mul@
+instruction has multiplied the two values in the V-stack, placing the
+result back there. In diagram (k) a @Mkint@ instruction has
+moved this result from the V-stack to the heap, recording the address
+of the newly created node on the S-stack.
+\begin{figure}
+\input{gm_v3}
+\caption{Mark~7 machine running @fac@}\label{gm:fg:7fac3}
+\end{figure}
+
+In a machine where there is a performance penalty for creating and
+accessing objects in the heap -- compared with keeping the objects in
+a stack -- we expect the use of the V-stack to be an improvement.
+Having seen how the V-stack works, we now make small modifications to
+the G-machine to implement the Mark~7 machine.
+
+\subsection{Data structures\index{data structures!in G-machine Mark 7}}
+
+The use of the V-stack requires that each G-machine state has a new
+state component @gmVStack@ added to its state.
+
+M7> gmState == (gmOutput,          || Current output
+M7>             gmCode,            || Current instruction stream
+M7>             gmStack,           || Current stack
+M7>             gmDump,            || Current dump
+M7>             gmVStack,          || Current V-stack
+M7>             gmHeap,            || Heap of nodes
+M7>             gmGlobals,         || Global addresses in heap
+M7>             gmStats)           || Statistics
+GH7> type GmState = (GmOutput,      -- Current output
+GH7>             GmCode,            -- Current instruction stream
+GH7>             GmStack,           -- Current stack
+GH7>             GmDump,            -- Current dump
+GH7>             GmVStack,          -- Current V-stack
+GH7>             GmHeap,            -- Heap of nodes
+GH7>             GmGlobals,         -- Global addresses in heap
+GH7>             GmStats)           -- Statistics
+
+As we have already stated this new component behaves as a stack of
+numbers.
+
+M7> gmVStack == [num]
+GH7> type GmVStack = [Int]
+
+We add access functions for this component.
+
+M7> getVStack :: gmState -> gmVStack
+GH7> getVStack :: GmState -> GmVStack
+7> getVStack (o, i, stack, dump, vstack, heap, globals, stats) = vstack
+
+M7> putVStack :: gmVStack -> gmState -> gmState
+GH7> putVStack :: GmVStack -> GmState -> GmState
+7> putVStack vstack' (o, i, stack, dump, vstack, heap, globals, stats)
+7> 	= (o, i, stack, dump, vstack', heap, globals, stats)
+
+\begin{exercise}\label{gm:X:access7}
+Make the relevant changes to the other access functions.
+\end{exercise}
+
+\subsubsection{Displaying the states}
+
+The function @showState@ is changed so that it prints out the V-stack
+component.
+
+M7> showState :: gmState -> iseq
+GH7> showState :: GmState -> Iseq
+7> showState s
+7> 	= iConcat [showOutput s,                 iNewline,
+7>            showStack s,                  iNewline,
+7>            showDump s,                   iNewline,
+7>            showVStack s,                 iNewline,
+7>            showInstructions (getCode s), iNewline]
+
+To do this we define the function @showVStack@.
+
+M7> showVStack :: gmState -> iseq
+GH7> showVStack :: GmState -> Iseq
+7> showVStack s
+7> 	= iConcat [iStr "Vstack:[",
+7>            iInterleave (iStr ", ") (map iNum (getVStack s)),
+7>            iStr "]"]
+
+\subsection{Instruction set}
+
+An obvious first requirement is that each of the arithmetic
+transitions will now have to be modified to get their values from, and
+return their results to, the V-stack instead of the ordinary stack.
+Let us first deal with the case of dyadic primitives. The generic
+transition for the operation $\odot$ is given below. It takes two
+arguments from the V-stack and places the result of the operation
+$\odot$ back onto the V-stack.
+
+\gmruleodv%
+{\gmstateodv{o}{\odot :i}{s}{d}{n_0:n_1:v}{h}{m}}%
+{\gmstateodv{o}{i}{s}{d}{n_0\,\odot\, n_1:v}{h}{m}}
+
+The @Neg@ instruction now has the following transition: it simply
+replaces the number on top of the V-stack with its negation.
+
+\gmruleodv%
+{\gmstateodv{o}{@Neg@ :i}{s}{d}{n:v}{h}{m}}%
+{\gmstateodv{o}{i}{s}{d}{(-n):v}{h}{m}}
+%
+We also need instructions to move values between the heap and the
+V-stack. We begin with @Pushbasic@, which pushes an integer $n$ onto
+the V-stack.
+
+\gmruleodv%
+{\gmstateodv{o}{@Pushbasic@\ n :i}{s}{d}{v}{h}{m}}%
+{\gmstateodv{o}{i}{s}{d}{n:v}{h}{m}}
+
+To move a value from the V-stack to the heap, we use two instructions:
+@Mkbool@ and @Mkint@. These treat the integer on top of the V-stack as
+booleans and integers respectively. We begin with @Mkbool@.
+
+\gmruleodv%
+{\gmstateodv{o}{@Mkbool@:i}{s}{d}{t:v}{h}{m}}%
+{\gmstateodv{o}{i}{a:s}{d}{v}{h[a: @NConstr@\  t\ []]}{m}}
+%
+The transition for @Mkint@ is similar, except that it creates a new
+integer node in the heap.
+
+\gmruleodv%
+{\gmstateodv{o}{@Mkint@:i}{s}{d}{n:v}{h}{m}}%
+{\gmstateodv{o}{i}{a:s}{d}{v}{h[a: @NNum@\  n]}{m}}
+
+To perform the inverse operation we use @Get@. This is specified by
+two transitions. In the first we see how @Get@ treats a boolean on top
+of the stack.
+
+\gmruleodv%
+{\gmstateodv{o}{@Get@:i}{a:s}{d}{v}{h[a: @NConstr@\  t\ []]}{m}}%
+{\gmstateodv{o}{i}{s}{d}{t:v}{h}{m}}
+%
+In the second, we see how @Get@ treats a number.
+
+\gmruleodv%
+{\gmstateodv{o}{@Get@:i}{a:s}{d}{v}{h[a: @NNum@\  n]}{m}}%
+{\gmstateodv{o}{i}{s}{d}{n:v}{h}{m}}
+
+Finally, to make use of booleans on the V-stack we use a simplified
+@Casejump@ instruction that inspects the V-stack to determine which
+instruction stream to use. This new instruction is called @Cond@, and
+is specified by the following two transitions. In the first -- with
+the value on top of the V-stack being true -- we select the first code
+sequence: $t$.
+
+\gmruleodv%
+{\gmstateodv{o}{@Cond@\ t\ f:i}{s}{d}{2:v}{h}{m}}%
+{\gmstateodv{o}{t\append i}{s}{d}{v}{h}{m}}
+%
+In the second transition we see that with a false value on top of the
+V-stack @Cond@ selects its second code sequence: $f$.
+
+\gmruleodv%
+{\gmstateodv{o}{@Cond@\ t\ f:i}{s}{d}{1:v}{h}{m}}%
+{\gmstateodv{o}{f\append i}{s}{d}{v}{h}{m}}
+
+\begin{exercise}\label{gm:X:instruction}
+Extend the instruction data type, redefine the @showInstruction@
+function, implement the new instruction transitions and modify the
+@dispatch@ function.
+\end{exercise}
+
+We now consider the -- rather extensive -- modifications to the
+compiler.
+
+\subsection{The compiler\index{G-machine compiler!Mark 7}}
+
+Because of the extra state component, the @compile@ function must
+initialise the V-stack component to be empty.
+
+M7> compile :: coreProgram -> gmState
+GH7> compile :: CoreProgram -> GmState
+7> compile program
+7> 	= ([], initialCode, [], [], [], heap, globals, statInitial)
+7>   	where (heap, globals) = buildInitialHeap program
+
+Strictly speaking, this is all that is necessary to make the machine
+work, but we have introduced the V-stack so that we can compile
+arithmetic functions `in-line', so this is what we intend our code
+to do.
+
+M7> buildInitialHeap :: coreProgram -> (gmHeap, gmGlobals)
+GH7> buildInitialHeap :: CoreProgram -> (GmHeap, GmGlobals)
+7> buildInitialHeap program
+7> 	= mapAccuml allocateSc hInitial compiled
+7>   	where compiled = map compileSc (preludeDefs ++ program ++ primitives)
+
+\par
+Because of the changes to the transitions for the primitive
+instruction, we must change the code for each compiled primitive.
+Instead of hand compiling this code -- as we did for the Mark~6
+machine -- we can instead give this job to the compiler. This of
+course relies on the fact that the compiler is clever enough to
+optimise the code it produces, otherwise we never generate any @Add@
+instructions!
+
+M7> primitives :: [(name,[name],coreExpr)]
+GH7> primitives :: [(Name,[Name],CoreExpr)]
+7> primitives
+7> 	= 	[("+", ["x","y"], (EAp (EAp (EVar "+") (EVar "x")) (EVar "y"))),
+7>    		 ("-", ["x","y"], (EAp (EAp (EVar "-") (EVar "x")) (EVar "y"))),
+7>    		 ("*", ["x","y"], (EAp (EAp (EVar "*") (EVar "x")) (EVar "y"))),
+7>    		 ("/", ["x","y"], (EAp (EAp (EVar "/") (EVar "x")) (EVar "y"))),
+
+We also need to add the negation function.
+
+7>    		 ("negate", ["x"], (EAp (EVar "negate") (EVar "x"))),
+
+Comparison functions are almost identical to the dyadic arithmetic
+functions.
+
+7>    		 ("==", ["x","y"], (EAp (EAp (EVar "==") (EVar "x")) (EVar "y"))),
+7>    		 ("~=", ["x","y"], (EAp (EAp (EVar "~=") (EVar "x")) (EVar "y"))),
+7>    		 (">=", ["x","y"], (EAp (EAp (EVar ">=") (EVar "x")) (EVar "y"))),
+7>    		 (">",  ["x","y"], (EAp (EAp (EVar ">")  (EVar "x")) (EVar "y"))),
+7>    		 ("<=", ["x","y"], (EAp (EAp (EVar "<=") (EVar "x")) (EVar "y"))),
+7>    		 ("<",  ["x","y"], (EAp (EAp (EVar "<")  (EVar "x")) (EVar "y"))),
+
+Finally, we ought to include the conditional function, and some
+supercombinators to represent boolean values.
+
+7>    		 ("if",  ["c","t","f"],
+7>       		(EAp (EAp (EAp (EVar "if") (EVar "c")) (EVar "t")) (EVar "f"))),
+7>    		 ("True",  [], (EConstr 2 0)),
+7>    		 ("False", [], (EConstr 1 0))]
+
+\subsubsection{The \tB{} compilation scheme}
+
+The \tB{} scheme, shown in Figure~\ref{gm:fg:schemes7.b}, constitutes
+another type of context. To be compiled by the \tB{} scheme, an
+expression must not only be known to need evaluation to WHNF, it must
+also be an expression of type integer or boolean. The following
+expressions will propagate through the \tB{} scheme:
+\begin{figure*}
+$\begin{array}{|rcll|}
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\B{e}~\rho$ compiles code that evaluates an expression $e$ to WHNF,
+in an environment $\rho$, leaving the result on the V stack.}}\\
+&&&\\
+\B{i}\ \rho     & = & [@Pushbasic@\ i] &\\
+\multicolumn{4}{|l|}{%
+\B{ @let@ ~ x_1 @=@ e_1 @;@ ~\ldots @;@ ~ x_n @=@ e_n ~ @in@ ~ e}~ \rho} \\
+ & = & \C{e_1}~ \rho^{+0} \append \ldots \append &\\
+    &&  \C{e_n}~\rho^{+(n-1)} \append & \\
+    &&  \B{e}~\rho' \append [@Pop@~ n]&\\
+    &&\multicolumn{2}{r|}{%
+\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}}\\
+%
+\multicolumn{4}{|l|}{%
+\B{ @letrec@ ~ x_1 @=@ e_1 @;@ ~\ldots @;@ ~ x_n @=@ e_n ~ @in@ ~ e}~ \rho} \\
+ & = & [@Alloc@ ~ n] \append & \\
+    &&\C{e_1}~ \rho' \append [@Update@\ n-1]\append \ldots \append &\\
+		 &&       \C{e_n}~\rho' \append [@Update@\ 0] \append &\\
+	       &&         \B{e}~\rho' \append [@Pop@~ n] &\\
+    &&\multicolumn{2}{r|}{%
+	\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}}\\
+\B{e_0~ @+@ ~e_1}~ \rho& = & \B{e_1}~ \rho \append\B{e_0}~ \rho \append [@Add@] &\\
+\multicolumn{4}{|r|}{\tr{And similarly for other arithmetic expressions}}\\
+\B{e_0~ @==@ ~e_1}~ \rho& = & \B{e_1}~ \rho \append\B{e_0}~ \rho \append [@Eq@] &\\
+\multicolumn{4}{|r|}{\tr{And similarly for other comparison expressions}}\\
+\B{ @negate@ ~ e}~ \rho& = & \B{e}~ \rho \append [@Neg@] &\\
+\B{ @if@ ~e_0 ~ e_1 ~ e_2} ~\rho & = & \B{e_0}~\rho \append [@Cond@\
+(\B{e_1}~\rho)~ (\B{e_2}~\rho)] &\\
+\B{e}\ \rho     & = & \E{e}\ \rho \append [@Get@] &
+\tr{the default case}\\
+&&&\\
+\hline
+\end{array}$
+\caption{The \tB{} compilation scheme}
+\label{gm:fg:schemes7.b}
+\end{figure*}
+\begin{itemize}
+\item If $@let(rec)@~\Delta~@in@~e$ occurs in a \tB{}-strict context
+then the expression $e$ is also in a \tB{}-strict context.
+
+\item If the expression $@if@ ~e_0~e_1~e_2$ occurs in a \tB{}-strict
+context then the expressions $e_0$, $e_1$ and $e_2$ also occur in
+\tB{}-strict contexts.
+
+\item If $e_0~\odot~e_1$ occurs in a \tB{}-strict context, with $\odot$
+being a comparison or arithmetic operator, then the expressions $e_0$
+and $e_1$ also occur in \tB{}-strict contexts.
+
+\item If $@negate@ ~e~$ occurs in a \tB{}-strict context then so does
+the expression $e$.
+\end{itemize}
+
+If we cannot recognise any of the special cases of expression, then
+the compiled code will evaluate the expression using the \tE{} scheme,
+and then perform a @Get@ instruction. The @Get@ instruction unboxes
+the value left on top of the stack by the \tE{} scheme and moves it to
+the V-stack.
+
+This has left unspecified how we know that an expression is initially
+in a \tB{}-strict context. The usual situation is that we generate a
+\tB{}-strict context from the usual strict context: \tE{}, with the
+additional knowledge that the value is of type integer or boolean.
+
+\begin{exercise}\label{gm:X:7b}
+Implement the \tB{} compiler scheme.
+\end{exercise}
+
+\subsubsection{The \tE{} compilation scheme}
+
+The \tE{} scheme -- defined in Figure~\ref{gm:fg:schemes7.e} --
+specifies that we should give special treatment to arithmetic and
+comparison function calls. It differs from the version we used for the
+Mark~6 machine because we make use of the \tB{} scheme to perform the
+arithmetic and comparison operations. Again, if there are no special
+cases, then we must use a default method to compile the expression.
+This is simply to build the graph, using the \tC{} scheme, and then
+place an @Eval@ instruction in the code stream. This will ensure that
+the graph is evaluated to WHNF.
+\begin{figure*}
+$\begin{array}{|rcll|}
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\E{e}~\rho$ compiles code that evaluates an expression $e$ to WHNF in
+environment $\rho$, leaving a pointer to the expression on top of the
+stack.}}\\
+&&&\\
+\E{i}\ \rho     & = & [@Pushint@\ i] &\\
+\multicolumn{4}{|l|}{%
+\E{ @let@ ~x_1 @=@ e_1 @;@ ~\ldots @;@ ~x_n @=@ e_n~ @in@ ~ e}~ \rho} \\
+ & = & \C{e_1}~ \rho^{+0} \append \ldots \append &\\
+    &&  \C{e_n}~\rho^{+(n-1)} \append & \\
+    &&  \E{e}~\rho' \append [@Slide@~ n]&\\
+    &&\multicolumn{2}{r|}{%
+\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}}\\
+%
+\multicolumn{4}{|l|}{%
+\E{ @letrec@ ~x_1 @=@ e_1 @;@ ~\ldots @;@ ~ x_n @=@ e_n~ @in@ ~e}~ \rho} \\
+ & = & [@Alloc@~ n] \append & \\
+    &&\C{e_1}~ \rho' \append [@Update@\ n-1]\append \ldots \append &\\
+		 &&       \C{e_n}~\rho' \append [@Update@\ 0] \append &\\
+	       &&         \E{e}~\rho' \append [@Slide@~ n] &\\
+    &&\multicolumn{2}{r|}{%
+	\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}}\\
+
+\E{ @case@ ~ e ~ @of@ ~ alts}~ \rho & = &
+\multicolumn{2}{l|}{%
+\E{e}~\rho \append  [@Casejump@\ \DE{alts}\ \rho]}\\
+\E{ @Pack{@ t @,@ a @}@~e_1~\ldots~e_a }~\rho &
+	   = & \C{e_a}~\rho\append\ldots
+			  \C{e_1}~\rho\append [@Pack@\ t\ a] & \\
+\E{e_0 ~@+@ ~e_1}~ \rho& = & \B{e_0 ~@+@~ e_1}~ \rho \append [@Mkint@] &\\
+\multicolumn{4}{|r|}{\tr{And similarly for other arithmetic expressions}}\\
+\E{e_0 ~@==@ ~e_1}~ \rho& = & \B{e_0~ @==@ ~e_1}~ \rho \append [@Mkbool@] &\\
+\multicolumn{4}{|r|}{\tr{And similarly for other comparison expressions}}\\
+\E{ @negate@ ~e}~ \rho& = & \B{ @negate@ ~e}~ \rho \append [@Mkint@] &\\
+\E{ @if@ ~e_0 ~ e_1 ~ e_2} ~\rho & = & \B{e_0}~\rho \append [@Cond@\
+(\E{e_1}~\rho)~ (\E{e_2}~\rho)] &\\
+\E{e}\ \rho     & = & \C{e}\ \rho \append [@Eval@] &
+\tr{the default case}\\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\DE{alts}~\rho$ compiles the code for the alternatives in a @case@ expression.}}
+\\
+&&&\\
+\DE{alt_1~ \ldots ~alt_n}~\rho
+& = & [\AltE{alt_1}~\rho,~ \ldots , ~ \AltE{alt_n}~\rho] & \\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\AltE{alt}~\rho$ compiles the code for an alternative in a @case@ expression.}}\\
+&&&\\
+\multicolumn{4}{|l|}{%
+\AltE{@<@t@>@~x_1\ldots x_n~@->@~body}~\rho}\\
+& = & \multicolumn{2}{l|}{%
+t~ @->@ ~ [@Split@\ n] \append \E{body}~\rho' \append [@Slide@\ n]}\\
+&&\multicolumn{2}{r|}{%
+\tr{where $\rho' = \rho^{+n}[x_1\mapsto 0\ldots x_n\mapsto n-1]$}}\\
+&&&\\
+\hline
+\end{array}$
+\caption{The Mark~7 \tE{}, \tDE{} and \tAltE{} compilation schemes}
+\label{gm:fg:schemes7.e}
+\end{figure*}
+
+\begin{exercise}\label{gm:X:e7}
+Implement the new \tE{} compiler scheme.
+\end{exercise}
+
+\subsubsection{The \tR{} compilation scheme}
+
+We also take this opportunity to improve the \tR{} scheme. Firstly, we
+wish to create opportunities for the \tB{} scheme to be used. We are
+also attempting to reduce the number of instructions that are executed
+at the end of a function's code sequence. The new compilation schemes
+for the \tR{} scheme are given in Figure~\ref{gm:fg:schemes7.r}. It has
+been expanded from the version we used in the Mark~6 machine; in that
+it now works like a {\em context}\index{compilation context}. We refer to this
+context as \tR{}-strict. An expression being compiled in a \tR{}-strict
+context will be evaluated to WHNF, and it will then be used to
+overwrite the current redex. It obeys the following rules of
+propagation.
+\begin{figure*}
+$\begin{array}{|rcll|}
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\R{e}~\rho~d$ generates code which instantiates the expression $e$ in
+environment $\rho$, for a supercombinator of arity $d$, and then proceeds
+to unwind the resulting stack.}}\\
+&&&\\
+\multicolumn{4}{|l|}{%
+\R{ @let@ ~ x_1 @=@ e_1 @;@ ~\ldots @;@ ~x_n @=@ e_n~ @in@ ~e}~ \rho~ d} \\
+ & = & \C{e_1}~ \rho^{+0} \append \ldots \append &\\
+    &&  \C{e_n}~\rho^{+(n-1)} \append & \\
+    &&  \R{e}~\rho' ~ (n+d)&\\
+    &&\multicolumn{2}{r|}{%
+\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}}\\
+%
+\multicolumn{4}{|l|}{%
+\R{ @letrec@ ~x_1 @=@ e_1 @;@ ~\ldots @;@ ~x_n @=@ e_n ~ @in@ ~ e}~ \rho~ d} \\
+ & = & [@Alloc@~ n] \append & \\
+    &&\C{e_1}~ \rho' \append [@Update@\ n-1]\append \ldots \append &\\
+		 &&       \C{e_n}~\rho' \append [@Update@\ 0] \append &\\
+	       &&         \R{e}~\rho' (n+d)&\\
+    &&\multicolumn{2}{r|}{%
+	\tr{where $\rho' = \rho^{+n}[x_1\mapsto n-1,\ldots,x_n\mapsto 0]$}}\\
+\R{ @if@ ~e_0 ~ e_1 ~ e_2} ~\rho~d & = & \B{e_0}~\rho \append [@Cond@\
+[\R{e_1}~\rho~d,\, \R{e_2}~\rho~d]] &\\
+\R{@case@~ e ~@of@~ alts}~ \rho ~d & = &
+\E{e}~\rho \append  [@Casejump@\ \DR{alts}\ \rho~ d] & \\
+\R{e}\ \rho~d     & = & \E{e}\ \rho \append [@Update@\ d, @Pop@\ d, @Unwind@] &
+\tr{the default case}\\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\DR{alts}~\rho~d$ compiles the code for the alternatives in a @case@
+expression.}}\\
+&&&\\
+\DR{alt_1~ \ldots ~alt_n}~\rho~d
+& = & [\AR{alt_1}~\rho~d,~ \ldots ,~ \AR{alt_n}~\rho~d] & \\
+&&&\\
+\hline
+&&&\\
+\multicolumn{4}{|l|}{\parbox[t]{29pc}{%
+$\AR{alt}~\rho~d$ compiles the code for an alternative in a @case@
+expression.}}\\
+&&&\\
+\multicolumn{4}{|l|}{%
+\AR{ @<@ t @>@ ~x_1\ldots x_n~ @->@ ~body}~\rho~d}\\
+& = & \multicolumn{2}{l|}{%
+t ~ @->@ ~ [@Split@\ n] \append \R{body}~\rho'~(n+d)}\\
+&&\multicolumn{2}{r|}{%
+\tr{where $\rho' = \rho^{+n}[x_1\mapsto 0\ldots x_n\mapsto n-1]$}}\\
+&&&\\
+\hline
+\end{array}$
+\caption{The Mark~7 \tR{}, \tDR{}, and \tAR{} compilation schemes}
+\label{gm:fg:schemes7.r}
+\end{figure*}
+
+\begin{itemize}
+\item The expression in the body of a supercombinator definition is in
+an \tR{}-strict context.
+
+\item If $@let(rec)@~\Delta~@in@~e$ occurs in an \tR{}-strict context
+then the expression $e$ is also in an \tR{}-strict context.
+
+\item If the expression $@if@ ~e_0~e_1~e_2$
+occurs in an \tR{}-strict context then the
+expressions $e_1$ and $e_2$ are also in an \tR{}-strict context.
+(The expression $e_0$ will now appear in a \tB{}-strict context.)
+
+\item If $@case@ ~e~ @of@ ~alts$ occurs in an \tR{}-strict context then
+the expression $e$ is in a strict context. Furthermore, the expression
+part of each alternative will occur in an \tR{}-strict context.
+
+\end{itemize}
+
+\begin{exercise}\label{gm:X:comp7r}
+Implement the \tR{} scheme in Figure~\ref{gm:fg:schemes7.r}.  Note that
+you can use the generality of the @compileAlts@ function to implement
+both the \tAR{} and \tAltE{} schemes.
+\end{exercise}
+
+One point worth noting about the Mark~7 machine is that we did not
+define the @Eval@ instruction to save the current V-stack on the dump.
+This is in contrast to the G-machine described in \cite{PJBook}.
+Whether you do this is really a matter of taste in the abstract
+machines we have produced in this book. In compiling code for a real
+machine we would be likely to try to minimise the number of stacks.
+When this is the case, we will wish to use the following alternative
+transition for @Eval@.
+
+\gmruleodv%
+{\gmstateodv{o}{@Eval@: i}{a:s}{d}{v}{h}{m}}%
+{\gmstateodv{o}{[@Unwind@]}{[a]}{\langle i,\, s,\, v\rangle:d}{[]}{h}{m}}
+
+\begin{exercise}
+Implement this alternative transition for @Eval@. What are the other
+instructions that will need to be changed to allow for this new
+transition?
+\end{exercise}
+
+\begin{exercise}
+What compilation rules would you change to produce optimised code
+for the boolean operators @&@, @|@ and @not@?
+\end{exercise}
+
+\begin{exercise}
+Add a @Return@ instruction with transition:
+
+\gmruleodv%
+{\gmstateodv{o}{[@Return@]}{[a_0,\ldots ,\, a_k]}{\langle i,\, s\rangle:d}{v}{h}{m}}%
+{\gmstateodv{o}{i}{a_k:s}{d}{v}{h}{m}}
+
+This is used by the \tR{} scheme in place of @Unwind@ when the item on
+top of the stack is known to be in WHNF. Modify @compileR@ to generate
+this new instruction.
+\end{exercise}
+
+\begin{exercise}
+Write out the transition for @UpdateInt n@. This instruction performs
+the same actions as the sequence @[Mkint, Update n]@. Implement this
+transition and a similar one for @UpdateBool n@. Modify @compileR@ to
+generate these instructions instead of the original sequences.
+
+Why are the new instructions preferred to the original sequences?
+(Hint: use the statistics from some sample programs.)
+\end{exercise}
+
+\section{Conclusions}
+
+The approach that we have taken in this chapter is a very useful one
+when designing large pieces of software. First we start with something
+very simple, and then by a number of gradual changes we produce a very
+large and complicated piece of software.  It would be misleading to
+claim that this is always possible by a process of small, incremental,
+changes. In fact the material presented as part of the Mark~1 machine
+was specifically designed with the Mark~7 machine in mind.
+
+For the moment, however, we have produced a reasonably efficient
+machine.  In the next chapter we will look at the TIM.
+
+\theendnotes
+
+% end of chap03

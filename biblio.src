@@ -1,0 +1,240 @@
+\begin{thebibliography}{Wakeling and Dix 1989}
+
+\bibitem[Aho {\em et al.} 1986]{Dragon}
+Aho, A.V., R. Sethi and J. D. Ullman,
+(1986)
+{\em Compilers: principles, techniques and tools},
+Addison Wesley.
+
+\bibitem[Argo 1989]{Argo89}
+Argo, G.
+(1989)
+{\em Improving the three instruction machine},
+Functional Programming Languages and Computer Architecture,
+Addison Wesley.
+
+\bibitem[Argo 1991]{ArgoThesis}
+Argo, G.
+(1991)
+{\em Efficient laziness},
+Ph.D. thesis, Department of Computing Science, University of Glasgow,
+Dec. 1991 (to appear).
+
+\bibitem[Augustsson 1984]{Augustsson:LFP84}
+Augustsson, L.
+(1984)
+{\rm A Compiler for Lazy ML},
+in
+{\em Proceedings of the 1984 ACM Symposium on Lisp and Functional Programming},
+Austin, Texas, Aug. 1984, pp.~218--227.
+
+\bibitem[Augustsson 1987]{Augustsson:thesis87}
+Augustsson, L.
+(1987)
+{\em Compiling lazy functional languages, part II},
+Ph.D. thesis, Chalmers Tekniska H\"{o}gskola, G\"{o}teborg, Sweden.
+
+\bibitem[Baker 1978]{Baker}
+Baker, H.
+(1978)
+{\rm List processing in real time on a serial computer},
+{\em Communications of the ACM\/} {\bf 21}(4), 280--294.
+
+\bibitem[Bird 1987]{Bird}
+Bird, R. 
+(1987)
+{\rm A formal development of an efficient supercombinator compiler},
+{\em Science of Computer Programming\/} {\bf 8}, 113--137.
+
+\bibitem[Bird and Wadler 1988]{BirdWadler}
+Bird, R., and P. L. Wadler,
+(1988)
+{\em Introduction to functional programming},
+Prentice Hall.
+
+% \bibitem[Burn {\it et al} 1988]{PJ:Snowbird}
+% GL Burn, SL Peyton Jones, JD Robson,
+% {\em The spineless {G}-machine},
+% Proc ACM Symposium on Lisp and Functional Programming,
+% Snowbird, Utah, July 1988. pp244--258.
+%
+\bibitem[Burn 1991]{BURN91:book}
+Burn, G.L.
+(1991)
+{\em Lazy functional languages: abstract interpretation and compilation},
+Pitman.
+
+\bibitem[Cheney 1970]{Cheney}
+Cheney, C. J.
+(1970)
+{\rm A non-recursive list compaction algorithm},
+{\em Communications of the ACM\/} {\bf 13}(11), 677--678.
+
+\bibitem[Cohen 1981]{Cohen}
+Cohen, J.
+(1981)
+{\rm Garbage collection of linked data structures},
+{\em ACM Computing Surveys\/} {\bf 13}(3), 341--367.
+
+\bibitem[Fairbairn 1985]{FairbairnRedundant}
+Fairbairn, J.
+(1985)
+{\rm Removing redundant laziness from supercombinators},
+{\em Proceedings of the Aspenas workshop on implementation of functional languages},
+Chalmers University, Feb. 1985.
+
+\bibitem[Fairbairn 1986]{FairbairnParser}
+Fairbairn, J.
+(1986)
+{\em Making form follow function -- an exercise in functional programming style},
+TR 89, Computer Lab., Cambridge.
+
+\bibitem[Fairbairn and Wray 1987]{FW87}
+Fairbairn, J. and S. Wray,
+(1987)
+{\em TIM -- a simple lazy abstract machine to execute supercombinators},
+Functional Programming Languages and Computer Architecture,
+LNCS 274, Springer Verlag.
+
+\bibitem[Fenichel and Yochelson 1969]{Fenichel}
+Fenichel, R. R. and J. C. Yochelson,
+(1969)
+{\rm A Lisp garbage collector for virtual memory computer systems},
+{\em Communications of the ACM\/} {\bf 12}(11), 611--612.
+
+\bibitem[Goldberg 1988]{GoldbergThesis}
+Goldberg, B. F. 
+(1988)
+{\em Multiprocessor execution of functional programs},
+Ph.D. thesis, YALEU/DCS/RR-618, Department of Computer Science, Yale University,
+April 1988.
+
+\bibitem[Holst 1990]{Holst}
+Holst, C. K.
+(1990)
+{\rm Improving full laziness},
+in
+{\em Functional Programming, Glasgow 1990},
+ed. Peyton~Jones, Hutton \& Holst,
+Workshops in Computing, Springer Verlag.
+
+\bibitem[Holyer 1991]{Hoyler}
+Holyer, I.
+(1991)
+{\em Functional programming with Miranda},
+Pitman.
+
+\bibitem[Hughes 1983]{HughesThesis}
+Hughes, R. J. M.
+(1983)
+{\em The design and implementation of programming languages},
+D.Phil. thesis, Programming Research Group, Oxford, July 1983.
+
+\bibitem[Johnsson 1984]{Johnsson:CC84}
+Johnsson, T.
+(1984)
+{\rm Efficient compilation of lazy evaluation},
+in
+{\em Proceedings of the SIGPLAN '84 Symposium on Compiler Construction},
+Montreal, Canada, June 1984, pp.~58--69.
+
+\bibitem[Johnsson 1985]{JohnssonLL}
+Johnsson, T.
+(1985)
+{\rm Lambda lifting: transforming programs to recursive equations},
+in
+{\em Proceedings of the IFIP Conference on Functional Programming and Computer Architecture},
+ed. Jouannaud, LNCS 201, Springer Verlag, pp.~190--205.
+
+\bibitem[Johnsson 1987]{Johnsson:thesis87}
+Johnsson, T.
+(1987)
+{\em Compiling lazy functional languages},
+Ph.D. thesis, Chalmers Tekniska H\"{o}gskola, G\"{o}teborg, Sweden.
+
+\bibitem[Jones {\em et al}. 1989]{Mix}
+Jones, N. D., P. Sestoft and H. S{\o}ndergaard,
+(1989)
+{\rm Mix: a self-applicable partial evaluator for experiments in compiler generation},
+{\em Lisp and Symbolic Computation\/} {\bf 2}(1), 9--50.
+
+\bibitem[Kingdon {\em et al} 1991]{HDG-machine}
+Kingdon, H., D. Lester and G. L. Burn,
+(1991)
+{\rm The HDG-machine: a highly distributed graph reducer for a transputer network},
+{\em The Computer Journal\/} {\bf 34}(4), 290--302.
+
+\bibitem[Lester 1988]{Lester88}
+Lester, D. R.
+(1988)
+{\em Combinator graph reduction: a congruence and its applications},
+D.Phil. Thesis, Technical Monograph PRG-73, Programming Research Group,
+Keble Rd, Oxford.
+
+\bibitem[Peyton Jones 1987]{PJBook}
+{Peyton Jones}, S. L.
+(1987)
+{\em The Implementation of Functional Programming Languages}.
+Prentice Hall International Series in Computer Science. 
+Prentice Hall, Hemel Hempstead.
+
+\bibitem[Peyton Jones 1989]{PJ:CJoverview}
+{Peyton Jones}, S. L.
+(1989)
+{\rm Parallel implementations of functional programming languages},
+{\em The Computer Journal\/} {\bf 32}(2), 175--186.
+
+\bibitem[Peyton~Jones 1991]{STG2}
+Peyton~Jones, S. L.
+(1991)
+{\rm The Spineless Tagless G-machine: a second attempt},
+in
+{\em Proceedings of the Workshop on Parallel Implementation of Functional Languages},
+ed. Glaser \& Hartel,
+CSTR 91--07, Department of Electronics and Computer Science,
+University of Southampton.
+
+\bibitem[Peyton Jones and Lester 1991]{SPELambdaLift}
+Peyton Jones, S. L. and D. Lester,
+(1991)
+{\rm A modular, fully lazy lambda lifter in Haskell},
+{\em Software -- Practice and Experience\/} {\bf 21}(5), 479--506.
+
+\bibitem[Peyton~Jones and Salkild 1989]{STG1}
+Peyton~Jones, S. L. and J. Salkild,
+(1989)
+{\rm The Spineless Tagless G-machine},
+in
+{\em Functional Programming Languages and Computer Architecture},
+ed. MacQueen, 
+Addison Wesley.
+
+\bibitem[Schorr and Waite 1967]{PointerReversal}
+Schorr, H. and W. Waite,
+(1967)
+{\rm An efficient machine-independent procedure for garbage collection},
+{\em Communications of the ACM\/} {\bf 10}(8), 501--506.
+
+\bibitem[Wadler 1985]{WadlerParser}
+Wadler, P. L.
+(1985)
+{\rm How to replace failure by a list of successes},
+in
+{\em Functional Programming Languages and Computer Architecture},
+Nancy, LNCS 201, Springer Verlag, pp.~113--128.
+
+\bibitem[Wadler 1987]{Wadler:87}
+Wadler, P. L.
+(1987)
+{\rm Projections for Strictness Analysis},
+in
+{\em Proceedings of the Functional Programming Languages and Computer Architecture Conference},
+Portland, LNCS 274, Springer Verlag, pp.~385--407.
+
+\bibitem[Wakeling and Dix 1989]{WD89}
+Wakeling, D. and A. Dix
+(1989)
+{\em Optimising partial applications in TIM},
+Department of Computer Science, University of York, March 1989.
+
+\end{thebibliography}

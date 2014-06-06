@@ -1,0 +1,4 @@
+twice f x = f (f x);
+g x = x*x;
+id x = x;
+main = twice g (id 3)

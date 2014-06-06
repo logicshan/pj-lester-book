@@ -1,0 +1,4 @@
+f x = letrec g = \y. letrec h = \z. h (g z)
+		     in h y x
+      in
+      g 4

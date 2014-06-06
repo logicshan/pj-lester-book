@@ -1,0 +1,2994 @@
+% $Date: 91/11/18 07:13:52 $
+% $Revision: 1.13 $
+% (c) 1991 Simon Peyton Jones & David Lester.
+\chapter{Lambda Lifting\index{lambda lifting}}
+\label{sect:lambda-lift}
+
+\section{Introduction}
+
+In this chapter\footnote{Some of the material in this chapter was 
+first published in \cite{SPELambdaLift}.}
+we will be looking at ways to extend the set of
+programs that are acceptable to the machines we have looked at
+previously in the book.  The extension that we introduce is to allow
+\stressD{local function definitions}.  We are then faced with
+alternative approaches:
+\begin{itemize}
+\item add a mechanism to the machines to deal with environments; or
+\item transform the program so that there are no local function
+definitions; instead all functions are defined as supercombinators.
+\end{itemize}
+In this book we have always assumed that the second approach would be
+taken.
+
+This chapter is also an appropriate point at which to introduce
+the concept of \stress{full laziness}.
+Again, this desirable optimisation of
+functional languages is achieved using a program transformation.
+%
+% It should be noted that @let(rec)@ expressions are retained, despite the
+% fact that they are responsible for many of the subtleties in the rest
+% of the chapter.  They can certainly be transformed into applications
+% of lambda abstractions and the @Y@ combinator, but doing so seems to
+% result in a serious and unavoidable loss of efficiency.  For example,
+% eliminating a @let@ expression introduces a new lambda abstraction,
+% which will be lambda-lifted, and thereby decompose execution into
+% smaller steps.  Furthermore, much better code can be compiled from
+% @let(rec)@ expressions than the corresponding lambda applications.
+
+\section{Improving the @expr@ data type}
+
+Before we begin the program proper, we must import the language
+and utilities modules.
+
+M> %include "language"
+M> %include "utils"
+G> -- :a utils.lhs
+G> -- :a language.lhs
+
+H> module Lambda where
+H> import Utils
+H> import Language
+
+Unfortunately, the data types defined there (@coreExpr@,
+@coreProgram@ and so on) are insufficiently flexible for our needs in
+this chapter, so we will attend to this problem first.  Many compiler
+passes add information to the abstract syntax tree, and we need a
+systematic way to represent this information.  Examples of analyses
+which generate this sort of information are: free-variable analysis,
+binding level analysis, type inference, strictness analysis and
+sharing analysis.
+
+The most obvious way to add such information is to add a new
+constructor for annotations to the @expr@ data type, thus:
+
+0> expr * = EVar name
+0>          | ...
+0>          | EAnnot annotation (expr *)
+
+together with an auxiliary data type for annotations, which can be
+extended as required:
+
+0> annotation ::= FreeVars (set name)
+0>                | Level num
+
+This allows annotations to appear freely throughout the syntax tree,
+which appears admirably flexible.  In practice, it suffers from two
+major disadvantages:
+\begin{itemize}
+\item
+It is easy enough to {\em add\/} annotation information in the form just
+described, but writing a compiler pass which {\em uses\/} information
+placed there by a previous pass is downright awkward.  Suppose, for
+example, that a pass wishes to use the free-variable information left
+at every node of the tree by a previous pass. Presumably this
+information is attached immediately above every node, but the data
+type would permit several annotation nodes to appear above each node,
+and worse still none (or more than one) might have a free-variable
+annotation.
+
+Even if the programmer is prepared to certify that there is exactly
+one annotation node above every tree node, and that it is a
+free-variable annotation, the implementation will still perform
+pattern matching to check these assertions when extracting the
+annotation.
+
+Both of these problems, namely the requirement for uncheckable
+programmer assertions and some implementation overhead, are directly
+attributable to the fact that every annotated tree has the rather
+uninformative type @expr@, which says nothing about which
+annotations are present.
+
+\item The second major problem is that further experimentation reveals
+that {\em two\/} distinct forms of annotation are required.  The first
+annotates expressions as above, but the second annotates the binding
+occurrences of variables; that is, the occurrences on the left-hand
+sides of @let(rec)@ definitions, and the bound variables in lambda
+abstractions or case expressions.  We will call these occurrences
+\stressD{binders}.  An example of the need to annotate binders comes
+in type inference, where the compiler infers a type for each
+binder, as well as for each sub-expression.
+
+It is possible to use the expression annotation to annotate binders,
+but it is clumsy and inconvenient to do so.
+\end{itemize}
+
+We will address the second problem first, since it has an easy
+solution.  Recall from Section~\ref{sect:core-data-types} that
+the @expr@ type was {\em parameterised\/} with respect to the type of its
+binders; we repeat its definition here as a reminder:
+
+0> expr *
+0>  ::=  EVar name                      || Variables
+0>       | ENum num                     || Numbers
+0>       | EConstr num num              || Constructor tag arity
+0>       | EAp (expr *) (expr *)        || Applications
+0>       | ELet                         || Let(rec) expressions
+0>            isRec                     ||   boolean with True = recursive,
+0>            [(*, expr *)]             ||   Definitions
+0>            (expr *)                  ||   Body of let(rec)
+0>       | ECase                        || Case expression
+0>            (expr *)                  ||   Expression to scrutinise
+0>            [alter *]                 ||   Alternatives
+0>       | ELam [*] (expr *)            || Lambda abstractions
+
+The type @coreExpr@ is a specialised form of @expr@ in which the
+binders are of type @name@. This is expressed using a type synonym
+(also repeated from Section~\ref{sect:core-data-types}):
+
+0> coreExpr == expr name
+
+The advantage of parameterising @expr@ is that we can also define
+other specialised forms.  For example,
+@typedExpr@ is a data type in which binders are names annotated with a type:
+
+0> typedExpr = expr (name, typeExpr)
+
+where @typeExpr@ is a data type representing type expressions.
+
+Returning to annotations on expressions, we can reuse the same
+technique by parameterising the data type of expressions with respect
+to the annotation type.  We want to have an annotation on every node
+of the tree, so one possibility would be to add an extra field to
+every constructor with the annotation information.  This is
+inconvenient if, for example, you simply want to extract the
+free-variable information at the top of a given expression without
+performing case analysis on the root node.  This leads to the
+following idea:
+\begin{important}
+each level of the tree is a pair, whose first
+component is the annotation, and whose second component is the
+abstract syntax tree node.
+\end{important}
+Here are the corresponding Miranda data type definitions:
+
+M> annExpr * ** == (**, annExpr' * **)
+GH> type AnnExpr a b = (b, AnnExpr' a b)
+
+M> annExpr' * ** ::= AVar name
+M>                   | ANum num
+M>                   | AConstr num num
+M>                   | AAp (annExpr * **) (annExpr * **)
+M>                   | ALet bool [annDefn * **] (annExpr * **)
+M>                   | ACase (annExpr * **) [annAlt * **]
+M>                   | ALam [*] (annExpr * **)
+GH> data AnnExpr' a b = AVar Name
+GH>                   | ANum Int
+GH>                   | AConstr Int Int
+GH>                   | AAp (AnnExpr a b) (AnnExpr a b)
+GH>                   | ALet Bool [AnnDefn a b] (AnnExpr a b)
+GH>                   | ACase (AnnExpr a b) [AnnAlt a b]
+GH>                   | ALam [a] (AnnExpr a b)
+
+M> annDefn * ** == (*, annExpr * **)
+GH> type AnnDefn a b = (a, AnnExpr a b)
+
+M> annAlt * **  == (num, [*], (annExpr * **))
+GH> type AnnAlt a b  = (Int, [a], (AnnExpr a b))
+
+M> annProgram * ** == [(name, [*], annExpr * **)]
+GH> type AnnProgram a b = [(Name, [a], AnnExpr a b)]
+
+
+Notice the way that the mutual recursion between @annExpr@ and
+@annExpr'@ ensures that every node in the tree carries an annotation.
+The sort of annotations carried by an expression are now manifested in
+the type of the expression.  For example, an expression annotated with
+free variables has type @annExpr name (set name)@.
+
+It is a real annoyance that @annExpr'@ and @expr@ have to define two
+essentially identical sets of constructors.  There appears to be no
+way around this within the Hindley-Milner type system.  It would be
+possible to abandon the @expr@ type altogether, because the @expr *@
+is nearly isomorphic to @annExpr * **@, but there are two reasons why
+we choose not to do this.  Firstly, the two types are not quite
+isomorphic, because the latter distinguishes $@((),@\perp@)@$ from
+$\perp$ while the former does not. Secondly (and more seriously), it
+is very tiresome to write all the @()@'s when building and
+pattern matching on trees of type @annExpr * **@.
+
+This completes our development of the central data type.  The
+discussion has revealed some of the strengths, and a
+weakness, of the algebraic data types provided by modern
+functional programming languages.
+
+\begin{exercise}
+\label{ll:X:eprint}
+Our present pretty-printing function, @pprint@, defined in
+Section~\ref{sect:pretty}, is only able to print @coreProgram@s.
+In order to print out intermediate stages in the lambda lifter we will
+need a function @pprintGen@ which can display values of type @program *@.
+(The `@Gen@' is short for `generic'.)
+@pprintGen@ needs an extra argument to tell it how to print
+the binders:
+
+0> pprintGen :: (* -> iseq)     || function from binders to iseq
+0>              -> program *    || the program to be formatted
+0>              -> [char]       || result string
+
+For example, once we have written @pprintGen@ we can define @pprint@ in
+terms of it:
+
+0> pprint prog = pprintGen iStr prog
+
+Write a definition for @pprintGen@, and its associated functions @pprExprGen@,
+and so on.
+\end{exercise}
+\begin{exercise}
+Do a similar job for printing values of type @annProgram * **@.  Here you
+will need two extra arguments, one for formatting the binders and one for
+formatting the annotations:
+
+0> pprintAnn :: (* -> iseq)             || function from binders to iseq
+0>              -> (** -> iseq)         || function from annotations to iseq
+0>              -> annProgram * **      || program to be displayed
+0>              -> [char]               || result string
+
+Write a definition for @pprintAnn@ and its associated auxiliary functions.
+\end{exercise}
+
+
+%****************************************************************
+%*                                                              *
+	\section{Mark~1: A simple lambda lifter\index{lambda lifter!Mark 1}}
+	\label{ll:mk1}
+%*                                                              *
+%****************************************************************
+
+Any implementation of a lexically scoped programming language has to
+cope with the fact that a function or procedure may have {\em free
+variables}\index{free variable}.  Unless these are removed in some
+way, an environment-based implementation has to manipulate linked
+environment frames, and a reduction-based system is made significantly
+more complex by the need to perform renaming during substitution.  A
+popular way of avoiding these problems, especially in graph reduction
+implementations, is to eliminate all free variables from function
+definitions by means of a transformation known as {\em lambda
+lifting}.  Lambda lifting is a term coined by \cite{JohnssonLL}, but
+the transformation was independently developed by \cite{HughesThesis}.
+
+In our context, lambda lifting transforms a Core-language program into
+an equivalent one in which there are no embedded lambda abstractions.
+To take a simple example, consider the program
+\begin{verbatim}
+	f x = let g = \y. x*x + y in (g 3 + g 4)
+	main = f 6
+\end{verbatim}
+The @\y@ abstraction
+can be removed by defining a new supercombinator @$g@ which takes
+@x@ as an extra parameter, but whose body is the offending
+abstraction, and replacing the @\y@ abstraction with an application of
+@$g@, giving the following
+set of supercombinator definitions:
+\begin{verbatim}
+	$g x y = x*x + y
+	f x = let g = $g x in (g 3 + g 4)
+	main = f 6
+\end{verbatim}
+How did we decide to make just @x@ into the extra parameter to @$g@?
+We did it because @x@ is a \stressD{free variable} of
+the abstraction @\y. x*x + y@:
+\begin{important}
+{\bf Definition.} An occurrence of a variable $v$ in an expression $e$
+is said to be {\em free\/}\index{free variable} in $e$ if the occurrence
+is not bound by an enclosing lambda or @let(rec)@ expression in $e$.
+\end{important}
+On the other hand, @y@ is not free in @(\y. x*x + y)@, because its
+occurrence is in the scope of an enclosing lambda abstraction which
+binds it.
+
+Matters are no more complicated when recursion is involved.  Suppose
+that @g@ was recursive, thus:
+\begin{verbatim}
+	f x = letrec g = \y. cons (x*y) (g y) in g 3
+	main = f 6
+\end{verbatim}
+Now @x@ and @g@ are both free in the @\y@ abstraction, so the lambda
+lifter will make them both into extra parameters of @$g@, producing
+the following set of supercombinators:
+\begin{verbatim}
+	$g g x y = cons (x*y) (g y)
+	f x = letrec g = $g g x in g 3
+	main = f 6
+\end{verbatim}
+Notice that the definition of @g@ is still recursive, but the lambda
+lifter has eliminated the local lambda abstraction.  The program is
+now directly implementable by most compiler back ends; and in
+particular by all of the abstract machines in this book.
+
+There one final gloss to add: there is no need to treat other top-level
+functions as extra parameters.  For example, consider the program
+\begin{verbatim}
+	h p q = p*q
+	f x = let g = \y. (h x x) + y in (g 3 + g 4)
+	main = f 6
+\end{verbatim}
+Here we do not want to treat @h@ as a free variable of the
+@\y@ abstraction, because it is a constant which can be referred to
+directly from the body of the new @$g@ supercombinator.  The same
+applies, of course, to the @+@ and @*@ functions!  In short, only
+supercombinator arguments, and variables bound by lambda abstractions
+or @let(rec)@ expressions, are candidates for being free variables.
+
+It is worth noting in passing that the lexical-scoping\index{lexical
+scoping} issue is not restricted to functional languages.  For
+example, Pascal allows a function to be declared locally within
+another function, and the inner function may have free variables bound
+by the outer scope.  On the other hand, the C language does not permit
+such local definitions.  In the absence of side effects, it is simple
+to make a local function definition into a global one: all we need do
+is add the free variables as extra parameters, and add these
+parameters to every call.  This is exactly what lambda lifting does.
+
+%\begin{exercise}\label{ll:X:impLs}
+%Why does not the technique of lambda-lifting work for imperative languages such
+%as Pascal?
+%\end{exercise}
+
+\subsection{Implementing a simple lambda lifter}
+\label{ll:mk1-imp}
+
+We are now ready to develop a simple lambda lifter. It will take a
+@coreProgram@ and return an equivalent @coreProgram@ in which there
+are no occurrences of the @ELam@ constructor.
+
+M> lambdaLift :: coreProgram -> coreProgram
+GH> lambdaLift :: CoreProgram -> CoreProgram
+
+The lambda lifter works in three passes:
+\begin{itemize}
+\item
+First, we annotate every node in the expression with its free variables.
+This is used by the following pass to decide which extra parameters
+to add to a lambda abstraction.  The @freeVars@ function has type
+
+M> freeVars :: coreProgram -> annProgram name (set name)
+GH> freeVars :: CoreProgram -> AnnProgram Name (Set Name)
+
+The type @set *@ is a standard abstract data type for sets, whose
+definition is given in Appendix~\ref{sect:set}.
+
+\item
+Second, the function @abstract@ abstracts
+from each lambda abstraction $@\@x_1\ldots x_n@.@e$ its
+free variables $v_1\ldots v_m$,
+replacing the lambda abstraction with
+an expression of the form
+\[
+(@let sc = \@v_1 \ldots v_m ~ x_1 \ldots x_n@.@~e~@in sc@)~v_1 \ldots v_m
+\]
+We could use a direct application of the lambda abstraction to the free
+variables, but we need to give the new supercombinator a name, so we take
+the first step here by always giving it the name @sc@.
+For example, the lambda abstraction
+\begin{verbatim}
+	(\x. y*x + y*z)
+\end{verbatim}
+would be transformed to
+\begin{verbatim}
+	(let sc = (\y z x.  y*x + y*z) in sc) y z
+\end{verbatim}
+@abstract@ has the type signature:
+
+M> abstract :: annProgram name (set name) -> coreProgram
+GH> abstract :: AnnProgram Name (Set Name) -> CoreProgram
+
+Notice, from the type signature, that @abstract@ removes the free variable
+information, which is no longer required.
+
+\item
+Now we traverse the program giving a unique name to each variable.
+This will have the effect of making unique all the @sc@ variables
+introduced by the previous pass.  Indeed, the sole purpose of
+introducing the extra @let@ expressions in the first place was to give
+each supercombinator a name which could then be made unique.  As a
+side effect, all other names in the program will be make unique, but
+this does not matter, and it will turn out to be useful later.
+
+M1-3> rename :: coreProgram -> coreProgram
+GH1-3> rename :: CoreProgram -> CoreProgram
+
+\item
+Finally, @collectSCs@
+collects all the supercombinator definitions into a single list, and
+places them at the top level of the program.
+
+M> collectSCs :: coreProgram -> coreProgram
+GH> collectSCs :: CoreProgram -> CoreProgram
+
+\end{itemize}
+
+The lambda lifter itself is the composition of these three functions:
+
+> lambdaLift = collectSCs . rename . abstract . freeVars
+
+To make it easier to see what is happening we define the a function @runS@
+(the `@S@' stands for `simple') to integrate the parser and printer:
+
+> runS = pprint . lambdaLift . parse
+
+It would of course be possible to do all the work in a single pass,
+but the modularity provided by separating them has a number of
+advantages: each individual pass is easier to understand, the passes
+may be reusable (for example, we reuse @freeVars@ below) and
+modularity makes it easier to change the algorithm somewhat.
+
+As an example of the final point, some compilers are able to generate
+better code by omitting the @collectSCs@ pass, because more is then
+known about the context in which the supercombinator is applied
+\cite{STG2}.  For example, consider the following expression, which
+might be produced by the @abstract@ pass:
+\begin{verbatim}
+	let f = (\v x. v-x) v
+	in ...f...f...
+\end{verbatim}
+Here @abstract@ has removed @v@ as a free variable from the
+@\x@ abstraction\footnote{We are ignoring the @let@ expression which
+@abstract@ introduces to name the supercombinator.}.  Rather than
+compiling the supercombinator independently of its context, a compiler
+could construct a closure for @f@, whose code accesses @v@ directly
+from the closure and @x@ from the stack.  The calls to @f@ thus do not
+have to move @v@ onto the stack.  The more free variables there are
+the more beneficial this becomes.  Nor do the calls to @f@ become less
+efficient because the definition is a local one; the compiler can see
+the binding for @f@ and can jump directly to its code.
+
+In the following sections we give definitions for each of these
+passes.  We omit the equations for @case@ expressions, which appear as
+Exercise~\ref{ex:simple-lambdalift-case}.
+
+\subsection{Free variables}
+
+The core of the free-variable pass is function @freeVars_e@ which has type
+
+M> freeVars_e :: (set name)                   || Candidates for free variables
+M>               -> coreExpr                  || Expression to annotate
+M>               -> annExpr name (set name)   || Annotated result
+GH> freeVars_e :: (Set Name)                   -- Candidates for free variables
+GH>               -> CoreExpr                  -- Expression to annotate
+GH>               -> AnnExpr Name (Set Name)   -- Annotated result
+
+Its first argument is the set of local variables which are in scope;
+these are the possible free variables.  The second argument is the
+expression to be annotated, and the result is the annotated
+expression.  The main function @freeVars@ just runs down the list of
+supercombinator definitions, applying @freeVars_e@ to each:
+
+> freeVars prog = [ (name, args, freeVars_e (setFromList args) body)
+>                 | (name, args, body) <- prog
+>                 ]
+
+The @freeVars_e@ function runs over the expression recursively; in the
+case of numbers there are no free variables, so this is what is
+returned in the annotated expression.
+
+> freeVars_e lv (ENum k)      = (setEmpty, ANum k)
+
+\par
+In the case of a variable, we check to see whether it is in the set of
+candidates to decide whether to return the empty set or a singleton set:
+
+M> freeVars_e lv (EVar v)      = (setSingleton v, AVar v),  setElementOf v lv
+M>                             = (setEmpty, AVar v),        otherwise
+GH> freeVars_e lv (EVar v) | setElementOf v lv = (setSingleton v, AVar v)
+GH>                        | otherwise         = (setEmpty, AVar v)
+
+\par
+The case for applications is straightforward: we first annotate the
+expression @e1@ with its free variables, then annotate @e2@, returning
+the union of the two sets of free variables as the free variables of
+@EAp e1 e2@.
+
+> freeVars_e lv (EAp e1 e2)
+M> = (setUnion (freeVarsOf e1') (freeVarsOf e2'), AAp e1' e2')
+M>   where e1'            = freeVars_e lv e1
+M>         e2'            = freeVars_e lv e2
+GH>  = (setUnion (freeVarsOf e1') (freeVarsOf e2'), AAp e1' e2')
+GH>    where e1'            = freeVars_e lv e1
+GH>          e2'            = freeVars_e lv e2
+
+In the case of a lambda abstractions we need to add the @args@ to the
+local variables passed in, and subtract them from the free variables
+passed out:
+
+> freeVars_e lv (ELam args body)
+M> = (setSubtraction (freeVarsOf body') (setFromList args), ALam args body')
+M>   where body'          = freeVars_e new_lv body
+M>         new_lv         = setUnion lv (setFromList args)
+GH>  = (setSubtraction (freeVarsOf body') (setFromList args), ALam args body')
+GH>    where body'          = freeVars_e new_lv body
+GH>          new_lv         = setUnion lv (setFromList args)
+
+\par
+The equation for @let(rec)@ expressions has rather a lot of plumbing,
+but is quite straightforward. The local variables in scope that are
+passed to the body is @body_lv@; the set of local variables passed to
+each right-hand side is @rhs_lv@. Next we annotate each right-hand
+side with its free variable set, giving @rhss'@, from this we can
+construct the annotated definitions: @defns'@. The annotated body of
+the @let(rec)@ is @body'@. The free variables of the definitions is
+calculated to be @defnsFree@, and those of the body are @bodyFree@.
+
+> freeVars_e lv (ELet is_rec defns body)
+M> = (setUnion defnsFree bodyFree, ALet is_rec defns' body')
+M>   where binders        = bindersOf defns
+M>         binderSet      = setFromList binders
+M>         body_lv        = setUnion lv binderSet
+M>         rhs_lv         = body_lv,     is_rec
+M>                        = lv,          otherwise
+M>
+M>         rhss'          = map (freeVars_e rhs_lv) (rhssOf defns)
+M>         defns'         = zip2 binders rhss'
+M>         freeInValues   = setUnionList (map freeVarsOf rhss')
+M>         defnsFree      = setSubtraction freeInValues binderSet, is_rec
+M>                        = freeInValues,                          otherwise
+M>         body'          = freeVars_e body_lv body
+M>         bodyFree       = setSubtraction (freeVarsOf body') binderSet
+GH>  = (setUnion defnsFree bodyFree, ALet is_rec defns' body')
+GH>    where binders        = bindersOf defns
+GH>          binderSet      = setFromList binders
+GH>          body_lv        = setUnion lv binderSet
+GH>          rhs_lv | is_rec    = body_lv
+GH>                 | otherwise = lv
+GH>
+GH>          rhss'          = map (freeVars_e rhs_lv) (rhssOf defns)
+GH>          defns'         = zip2 binders rhss'
+GH>          freeInValues   = setUnionList (map freeVarsOf rhss')
+GH>          defnsFree | is_rec    = setSubtraction freeInValues binderSet
+GH>                    | otherwise = freeInValues
+GH>          body'          = freeVars_e body_lv body
+GH>          bodyFree       = setSubtraction (freeVarsOf body') binderSet
+
+The function @zip2@ in the definition of @defns'@ is a standard
+function which takes two lists and returns a list consisting of pairs
+of corresponding elements of the argument lists.  The set operations
+@setUnion@, @setSubtraction@ and so on are defined in the utilities
+module, whose interface is given in Appendix~\ref{sect:set}.
+
+We postpone dealing with @case@ and constructor expressions:
+
+> freeVars_e lv (ECase e alts) = freeVars_case lv e alts
+0> freeVars_e lv (EConstr t a) = error "freeVars_e: no case for constructors"
+0> freeVars_case lv e alts = error "freeVars_case: not yet written"
+
+@freeVarsOf@ and @freeVarsOf_alt@ are simple auxiliary functions:
+
+M> freeVarsOf :: annExpr name (set name) -> set name
+GH> freeVarsOf :: AnnExpr Name (Set Name) -> Set Name
+> freeVarsOf (free_vars, expr) = free_vars
+
+M> freeVarsOf_alt :: annAlt name (set name) -> set name
+GH> freeVarsOf_alt :: AnnAlt Name (Set Name) -> Set Name
+> freeVarsOf_alt (tag, args, rhs)
+M> = setSubtraction (freeVarsOf rhs) (setFromList args)
+GH>  = setSubtraction (freeVarsOf rhs) (setFromList args)
+
+\subsection{Generating supercombinators}
+\label{ll:abstract}
+
+The next pass merely replaces each lambda abstraction, which is now
+annotated with its free variables, with a new abstraction (the
+supercombinator) applied to its free variables.
+
+> abstract prog = [ (sc_name, args, abstract_e rhs)
+>                    | (sc_name, args, rhs) <- prog
+>                    ]
+
+As usual, we define an auxiliary function @abstract_e@ to do most of
+the work:
+
+M> abstract_e :: annExpr name (set name) -> coreExpr
+GH> abstract_e :: AnnExpr Name (Set Name) -> CoreExpr
+
+It takes an expression annotated with the free variable information
+and returns an expression with each lambda abstraction replaced by a
+new abstraction applied to the free variables. There is little to say
+about the first four cases, they just recursively abstract each
+expression.
+
+> abstract_e (free, AVar v)    = EVar v
+> abstract_e (free, ANum k)    = ENum k
+> abstract_e (free, AAp e1 e2) = EAp (abstract_e e1) (abstract_e e2)
+> abstract_e (free, ALet is_rec defns body)
+M> =  ELet is_rec [ (name, abstract_e body) | (name, body) <- defns]
+M>                  (abstract_e body)
+GH>  =  ELet is_rec [ (name, abstract_e body) | (name, body) <- defns]
+GH>                   (abstract_e body)
+
+The function @foldll@ is a standard function, defined in
+Appendix~\ref{sect:util-funs}; given a dyadic function $\oplus$, a
+value $b$, and a list $xs\ =\ [x_1,...,x_n]$, $@foldll@\ \oplus\ b\
+xs$ computes $( \ldots ((b~ \oplus~ x_1)~ \oplus~ x_2)~ \oplus~ \ldots
+x_n)$.  Notice the way that the free-variable information is discarded
+by the pass, since it is no longer required.
+
+The final case we show is the heart of the @abstract_e@ function.
+First we create a list of free variables: @fvList@. We recall that
+there is no ordering implicit in a set; the function @setToList@ has
+induced an ordering on the elements, but we do not much care what order
+this is. Next we make a new supercombinator. This involves
+\begin{enumerate}
+\item applying @abstract_e@ to the body of the lambda expression; and
+
+\item augmenting the argument list, by prefixing the original one with
+the free-variable list.
+\end{enumerate}
+Next, to allow the @collectSCs@ pass to detect this new
+supercombinator, we wrap it into a @let@ expression.  Finally, we apply
+the new supercombinator to each free variable in turn.
+
+> abstract_e (free, ALam args body)
+M> = foldll EAp sc (map EVar fvList)
+M>   where
+M>   fvList = setToList free
+M>   sc = ELet nonRecursive [("sc",sc_rhs)] (EVar "sc")
+M>   sc_rhs = ELam (fvList ++ args) (abstract_e body)
+GH>  = foldll EAp sc (map EVar fvList)
+GH>    where
+GH>    fvList = setToList free
+GH>    sc = ELet nonRecursive [("sc",sc_rhs)] (EVar "sc")
+GH>    sc_rhs = ELam (fvList ++ args) (abstract_e body)
+
+@case@ expressions and constructors are deferred:
+
+0> abstract_e (free, AConstr t a) = error "abstract_e: no case for Constr"
+> abstract_e (free, ACase e alts) = abstract_case free e alts
+0> abstract_case free e alts = error "abstract_case: not yet written"
+
+It is worth observing that @abstract_e@ treats the two expressions
+\linebreak[3]
+@(ELam args1 (ELam args2 body))@ and @(ELam (args1++args2) body)@
+\linebreak[3]
+differently.  In the former case, the two abstractions will be treated
+separately, generating two supercombinators, while in the latter only
+one supercombinator is produced.  It is clearly advantageous to merge
+directly nested @ELam@s before performing lambda lifting.  This is
+equivalent to the $\eta$-abstraction optimisation noted by
+\cite{HughesThesis}.
+
+\subsection{Making all the variables unique\index{renaming pass, of lambda lifter}}
+
+Next, we need to make each variable so that all the @sc@ variables
+introduced by @abstract@ are unique.  The auxiliary function,
+@rename_e@, takes an environment mapping old names to new names, a
+name supply and an expression.  It returns a depleted name supply and
+a new expression.
+
+M> rename_e :: assoc name name                   || Binds old names to new
+M>             -> nameSupply                     || Name supply
+M>             -> coreExpr                       || Input expression
+M>             -> (nameSupply, coreExpr)         || Depleted supply and result
+GH> rename_e :: ASSOC Name Name                   -- Binds old names to new
+GH>             -> NameSupply                     -- Name supply
+GH>             -> CoreExpr                       -- Input expression
+GH>             -> (NameSupply, CoreExpr)         -- Depleted supply and result
+
+Now we can define @rename@ in terms of @rename_e@, by applying the latter
+to each supercombinator definition, plumbing the name supply along with
+@mapAccuml@.
+
+1-3> rename prog
+M1-3> = second (mapAccuml rename_sc initialNameSupply prog)
+M1-3>   where
+M1-3>   rename_sc ns (sc_name, args, rhs)
+M1-3>   = (ns2, (sc_name, args', rhs'))
+M1-3>     where
+M1-3>     (ns1, args', env) = newNames ns args
+M1-3>     (ns2, rhs') = rename_e env ns1 rhs
+GH1-3>  = second (mapAccuml rename_sc initialNameSupply prog)
+GH1-3>    where
+GH1-3>    rename_sc ns (sc_name, args, rhs)
+GH1-3>     = (ns2, (sc_name, args', rhs'))
+GH1-3>       where
+GH1-3>       (ns1, args', env) = newNames ns args
+GH1-3>       (ns2, rhs') = rename_e env ns1 rhs
+
+\par
+The function @newNames@ takes a name supply and a list of names as its
+arguments.  It allocates a new name for each old one from the name supply,
+returning the depleted name supply, a list of new names and an association
+list mapping old names to new ones.
+
+M> newNames :: nameSupply -> [name] -> (nameSupply, [name], assoc name name)
+GH> newNames :: NameSupply -> [Name] -> (NameSupply, [Name], ASSOC Name Name)
+> newNames ns old_names
+M> = (ns', new_names, env)
+M>   where
+M>   (ns', new_names) = getNames ns old_names
+M>   env = zip2 old_names new_names
+GH>  = (ns', new_names, env)
+GH>    where
+GH>    (ns', new_names) = getNames ns old_names
+GH>    env = zip2 old_names new_names
+
+The definition of @rename_e@ is now straightforward, albeit dull.
+When we meet a variable, we look it up in the environment.  For top-level
+functions and built-in functions (such as @+@) we will find no substitution
+for it in the environment, so we just use the existing name:
+
+> rename_e env ns (EVar v)      = (ns, EVar (aLookup env v v))
+
+\par
+Numbers and applications are easy.
+
+> rename_e env ns (ENum n)      = (ns, ENum n)
+> rename_e env ns (EAp e1 e2)
+M> = (ns2, EAp e1' e2')
+M>   where
+M>   (ns1, e1') = rename_e env ns e1
+M>   (ns2, e2') = rename_e env ns1 e2
+GH>  = (ns2, EAp e1' e2')
+GH>    where
+GH>    (ns1, e1') = rename_e env ns e1
+GH>    (ns2, e2') = rename_e env ns1 e2
+
+When we meet an @ELam@ we need to invent new names for the arguments,
+using @newNames@, and augment the environment with the mapping
+returned by @newNames@.
+
+> rename_e env ns (ELam args body)
+M> = (ns1, ELam args' body')
+M>   where
+M>   (ns1, args', env') = newNames ns args
+M>   (ns2, body') = rename_e (env' ++ env) ns1 body
+GH>  = (ns1, ELam args' body')
+GH>    where
+GH>    (ns1, args', env') = newNames ns args
+GH>    (ns2, body') = rename_e (env' ++ env) ns1 body
+
+@let(rec)@ expressions work similarly:
+
+> rename_e env ns (ELet is_rec defns body)
+M> = (ns3, ELet is_rec (zip2 binders' rhss') body')
+M>   where
+M>   (ns1, body') = rename_e body_env ns body
+M>   binders = bindersOf defns
+M>   (ns2, binders', env') = newNames ns1 binders
+M>   body_env = env' ++ env
+M>   (ns3, rhss') = mapAccuml (rename_e rhsEnv) ns2 (rhssOf defns)
+M>   rhsEnv = body_env,  is_rec
+M>          = env,       otherwise
+GH>  = (ns3, ELet is_rec (zip2 binders' rhss') body')
+GH>    where
+GH>    (ns1, body') = rename_e body_env ns body
+GH>    binders = bindersOf defns
+GH>    (ns2, binders', env') = newNames ns1 binders
+GH>    body_env = env' ++ env
+GH>    (ns3, rhss') = mapAccuml (rename_e rhsEnv) ns2 (rhssOf defns)
+GH>    rhsEnv | is_rec    = body_env
+GH>           | otherwise = env
+
+\par
+We leave @case@ expressions as an exercise:
+
+0> rename_e env ns (EConstr t a) = error "rename_e: no case for constructors"
+> rename_e env ns (ECase e alts) = rename_case env ns e alts
+0> rename_case env ns e alts = error "rename_case: not yet written"
+
+\subsection{Collecting supercombinators\index{collecting
+supercombinators pass, of lambda lifter}}
+
+Finally, we have to name the supercombinators and collect them
+together.  The main function, @collectSCs_e@, therefore has to return
+the collection of supercombinators it has found, as well as the
+transformed expression.
+
+M> collectSCs_e :: coreExpr -> ([coreScDefn], coreExpr)
+GH> collectSCs_e :: CoreExpr -> ([CoreScDefn], CoreExpr)
+
+@collectSCs@ is defined using @mapAccuml@ to do all the plumbing:
+
+> collectSCs prog
+M> = concat (map collect_one_sc prog)
+M>   where
+M>   collect_one_sc (sc_name, args, rhs)
+M>   = (sc_name, args, rhs') : scs
+M>     where
+M>     (scs, rhs') = collectSCs_e rhs
+GH>  = concat (map collect_one_sc prog)
+GH>    where
+GH>    collect_one_sc (sc_name, args, rhs)
+GH>     = (sc_name, args, rhs') : scs
+GH>      where
+GH>      (scs, rhs') = collectSCs_e rhs
+
+\par
+The code for @collectSCs_e@ is now easy to write.  We just apply
+@collectSCs_e@ recursively to the sub-expressions, collecting up the
+supercombinators thus produced.
+
+> collectSCs_e (ENum k)      = ([], ENum k)
+> collectSCs_e (EVar v)      = ([], EVar v)
+> collectSCs_e (EAp e1 e2)   = (scs1 ++ scs2, EAp e1' e2')
+>                              where
+>                              (scs1, e1') = collectSCs_e e1
+>                              (scs2, e2') = collectSCs_e e2
+
+> collectSCs_e (ELam args body) = (scs, ELam args body')
+>                                 where
+>                                 (scs, body') = collectSCs_e body
+> collectSCs_e (EConstr t a) = ([], EConstr t a)
+> collectSCs_e (ECase e alts)
+M> = (scs_e ++ scs_alts, ECase e' alts')
+M>   where
+M>   (scs_e, e') = collectSCs_e e
+M>   (scs_alts, alts') = mapAccuml collectSCs_alt [] alts
+M>   collectSCs_alt scs (tag, args, rhs) = (scs++scs_rhs, (tag, args, rhs'))
+M>                                         where
+M>                                         (scs_rhs, rhs') = collectSCs_e rhs
+GH>  = (scs_e ++ scs_alts, ECase e' alts')
+GH>    where
+GH>    (scs_e, e') = collectSCs_e e
+GH>    (scs_alts, alts') = mapAccuml collectSCs_alt [] alts
+GH>    collectSCs_alt scs (tag, args, rhs) = (scs++scs_rhs, (tag, args, rhs'))
+GH>                                          where
+GH>                                          (scs_rhs, rhs') = collectSCs_e rhs
+
+\par
+The case for @let(rec)@ is the interesting one.  We need to
+process the definitions recursively and then split them into two
+groups: those of the form $v ~@= \@ args @.@~e$ (the
+supercombinators), and the others (the non-supercombinators).  The
+supercombinators are returned as part of the supercombinator list, and
+a new @let(rec)@ is formed from the remaining non-supercombinators:
+
+> collectSCs_e (ELet is_rec defns body)
+M> = (rhss_scs ++ body_scs ++ local_scs, mkELet is_rec non_scs' body')
+M>   where
+M>   (rhss_scs,defns') = mapAccuml collectSCs_d [] defns
+M>
+M>   scs'     = [(name,rhs) | (name,rhs) <- defns';   isELam rhs ]
+M>   non_scs' = [(name,rhs) | (name,rhs) <- defns'; ~(isELam rhs)]
+M>   local_scs = [(name,args,body) | (name,ELam args body) <- scs']
+M>
+M>   (body_scs, body') = collectSCs_e body
+M>
+M>   collectSCs_d scs (name,rhs) = (scs ++ rhs_scs, (name, rhs'))
+M>                                 where
+M>                                 (rhs_scs, rhs') = collectSCs_e rhs
+GH>  = (rhss_scs ++ body_scs ++ local_scs, mkELet is_rec non_scs' body')
+GH>    where
+GH>    (rhss_scs,defns') = mapAccuml collectSCs_d [] defns
+GH>
+GH>    scs'     = [(name,rhs) | (name,rhs) <- defns',  isELam rhs ]
+GH>    non_scs' = [(name,rhs) | (name,rhs) <- defns',  not (isELam rhs)]
+GH>    local_scs = [(name,args,body) | (name,ELam args body) <- scs']
+GH>
+GH>    (body_scs, body') = collectSCs_e body
+GH>
+GH>    collectSCs_d scs (name,rhs) = (scs ++ rhs_scs, (name, rhs'))
+GH>                                  where
+GH>                                  (rhs_scs, rhs') = collectSCs_e rhs
+
+The auxiliary function @isELam@ tests for an @ELam@ constructor; it is
+used to identify supercombinators.
+
+M> isELam :: expr * -> bool
+GH> isELam :: Expr a -> Bool
+> isELam (ELam args body) = True
+> isELam other            = False
+
+The @mkELet@ function just builds an @ELet@ expression:
+
+1> mkELet is_rec defns body = ELet is_rec defns body
+
+%****************************************************************
+%*                                                              *
+	\section{Mark 2: Improving the simple lambda lifter\index{lambda lifter!Mark 2}}
+	\label{sect:simple-lambdalift-improvements}
+%*                                                              *
+%****************************************************************
+
+This completes the definition of the simple lambda lifter.
+We now consider some simple improvements.
+
+\subsection{Simple extensions}
+
+\begin{exercise}
+The simple lambda lifter generates lots of @let@ expressions with an
+empty list of bindings, because @collectSCs@ removes the single binding
+from each of the supercombinator @let@ expressions introduced by @abstract@.
+Modify @mkELet@ to elide these redundant @let@ expressions.
+\end{exercise}
+
+\begin{exercise} \label{ex:simple-lambdalift-case}
+Give definitions for @freeVars_case@, @abstract_case@ and @collectSCs_case@,
+and test them.
+\end{exercise}
+
+\subsection{Eliminating redundant supercombinators\index{redundant
+supercombinators, in lambda lifter}}
+
+Consider the Core-language program
+\begin{verbatim}
+	f = \x. x+1
+\end{verbatim}
+This will be transformed by @lambdaLift@ to
+\begin{verbatim}
+	f = $f
+	$f x = x+1
+\end{verbatim}
+It would be nicer to avoid introducing the redundant definition.
+This improvement will become rather more significant when we come to
+consider full laziness, because many supercombinators of this form
+will be introduced.
+\begin{exercise}
+Add a special case to the function @collect_one_sc@ (in @collectSCs@),
+to behave differently when @rhs@ is a lambda abstraction.
+You should be able to avoid introducing a new supercombinator
+in this situation.
+\end{exercise}
+
+\subsection{Eliminating redundant local definitions\index{redundant
+local definitions, in lambda lifter}}
+
+A similar situation can arise with local definitions.
+Consider the Core-language program
+\begin{verbatim}
+	f x = let g = (\y. y+1) in g (g x)
+\end{verbatim}
+The lambda lifter will produce the program
+\begin{verbatim}
+	f x = let g = $g in g (g x)
+	$g y = y+1
+\end{verbatim}
+\begin{exercise}
+Improve the definition of @collectSCs_d@ (in the @ELet@ case of @collectSCs_e@),
+so that it gives special treatment to definitions
+whose right-hand side is a lambda abstraction.  For the above example you
+should generate
+\begin{verbatim}
+	f x = g (g x)
+	g y = y+1
+\end{verbatim}
+\end{exercise}
+
+
+%****************************************************************
+%*                                                              *
+	\section{Mark~3: Johnsson-style lambda lifting\index{lambda lifter!Mark 3}\index{lambda lifter!Johnsson's}}
+	\label{ll:jll}\label{sect:johnsson}
+%*                                                              *
+%****************************************************************
+
+There is an interesting variant of the lambda lifting technique, which
+was discovered by \cite{JohnssonLL}. One slight problem with our
+current technique is that it produces programs in which many of the
+calls are to functions which are passed in as arguments.  For example,
+consider the recursive example in Section~\ref{ll:mk1}:
+\begin{verbatim}
+	f x = letrec g = \y. cons (x*y) (g y) in g 3
+	main = f 6
+\end{verbatim}
+Our current lambda lifter produces the following set of
+supercombinators:
+\begin{verbatim}
+	$g g x y = cons (x*y) (g y)
+	f x = letrec g = $g g x in g 3
+	main = f 6
+\end{verbatim}
+Notice that @$g@ makes a call to its argument @g@.  In some
+implementations it would be more efficient if @$g@ was directly
+recursive, like this:
+\begin{verbatim}
+	$g x y = cons (x*y) ($g x y)
+	f x = $g x 3
+	main = f 6
+\end{verbatim}
+The inner @letrec@ has vanished altogether, and the supercombinator
+$g$ has become directly recursive.
+
+To get a more detailed idea of how to do Johnsson-style lambda
+lifting, we will look at a slightly more complicated example:
+\begin{verbatim}
+	f x y = letrec
+		   g = \p. ...h...x...
+		   h = \q. ...g...y...
+		in
+		...g...h...
+\end{verbatim}
+Here, @g@ is meant to be a function which calls @h@, and mentions the
+variable @x@; similarly @h@ calls @g@ and mentions @y@.  The first
+step is to transform the definition like this:
+\begin{verbatim}
+	f x y = letrec
+		   g = \x y p. ...(h x y)...x...
+		   h = \x y q. ...(g x y)...y...
+		in
+		...(g x y)...(h x y)...
+\end{verbatim}
+
+This transformation, which we call the \stressD{abstraction step}, is
+a little tricky.  It does the following:
+\begin{itemize}
+\item
+take the free variables of the right-hand sides of the @letrec@,
+namely @g@, @h@, @x@ and @y@;
+\item
+exclude the variables being bound (@g@ and
+@h@) to leave just @x@ and @y@;
+\item
+make these variables into extra arguments
+of each right-hand side;
+\item
+and replaced all occurrences of @g@ with @(g x y)@,
+similarly for @h@.
+\end{itemize}
+It is important that we make @y@ into an extra parameter of @g@ even
+though @y@ does not occur directly in its right-hand side, because @g@
+will need it to pass to @h@.  In general, each member of the
+mutually recursive group must take as extra arguments the free
+variables of {\em all\/} the members together.
+
+Now all we need do is float the definitions of @g@ and @h@ out to the
+top level, leaving:
+\begin{verbatim}
+	f x y = ...(g x y)...(h x y)...
+	g x y p = ...(h x y)...x...
+	h x y q = ...(g x y)...y...
+\end{verbatim}
+
+One last point. Before doing this process it is important that all
+binders are unique.  Otherwise name clashes could arise, in two ways.
+The obvious way is that two supercombinators could have the same name.
+The less obvious way is illustrated by the following variant of the
+same example:
+\begin{verbatim}
+	f x y = letrec
+		   g = \p. ...h...x...
+		   h = \x. ...g...y...
+		in
+		...g...h...
+\end{verbatim}
+Now @h@ uses the same name for its argument as @f@, which will cause
+trouble when we try to make the free variable of @g@, namely @x@, into
+an extra argument to @h@!  All in all, it is much easier simply to
+rename the program before starting work.
+
+\subsection{Implementation}
+
+The Johnsson-style lambda lifter can be implemented in several passes:
+\begin{itemize}
+\item
+The first pass renames the program so that all binders are unique.  We
+can reuse the @rename@ function for this purpose.
+
+\item
+Next, we annotate the program with its free-variable information, using
+the existing function @freeVars@.
+
+\item
+Now comes the main abstraction step discussed above:
+
+M3-> abstractJ :: annProgram name (set name) -> coreProgram
+GH3-> abstractJ :: AnnProgram Name (Set Name) -> CoreProgram
+
+\item
+Finally, we can collect supercombinators with @collectSCs@.
+\end{itemize}
+The full Johnsson-style lambda lifter is just the composition of these
+stages:
+
+3-> lambdaLiftJ = collectSCs . abstractJ . freeVars . rename
+3-> runJ = pprint . lambdaLiftJ . parse
+
+\subsection{Abstracting free variables in functions}
+
+The only new function we need is @abstractJ@.  The abstraction process
+makes substitutions as it goes along, replacing $g$ with $g~v_1\ldots
+v_n$, where $g$ is one of the new supercombinators and
+$v_1,\ldots,v_n$ are the free variables of its declaration group.  It
+follows that the auxiliary function @abstractJ_e@ needs to take an
+environment mapping each supercombinator $g$ to the free variables of
+its group $v_1,\ldots,v_n$:
+
+M3-> abstractJ_e :: assoc name [name]              || Maps each new SC to
+M3->                                               ||   the free vars of its group
+M3->                -> annExpr name (set name)     || Input expression
+M3->                -> coreExpr                    || Result expression
+GH3-> abstractJ_e :: ASSOC Name [Name]              -- Maps each new SC to
+GH3->                                               --   the free vars of its group
+GH3->                -> AnnExpr Name (Set Name)     -- Input expression
+GH3->                -> CoreExpr                    -- Result expression
+
+To be fair, it looks as though the first argument could be of type
+@assoc name coreExpr@ but, as we shall see, we need to make use of the
+environment in another way as well, which leads to the type we suggest
+here.
+
+It is now easy to define @abstractJ@ in terms of @abstractJ_e@, by
+applying the latter to each top-level definition:
+
+3-> abstractJ prog = [ (name,args,abstractJ_e [] rhs)
+3->                  | (name, args, rhs) <- prog]
+
+Now we come to @abstractJ_e@.  The cases for constants and
+applications are easy.
+
+3-> abstractJ_e env (free, ANum n)      = ENum n
+3-> abstractJ_e env (free, AConstr t a) = EConstr t a
+3-> abstractJ_e env (free, AAp e1 e2)   = EAp (abstractJ_e env e1)
+3->                                           (abstractJ_e env e2)
+
+When we come to a variable $g$, we look it up in the environment,
+getting back a list of variables $v_1,\ldots,v_n$.  We then return the
+application $g~v_1 \ldots v_n$.  If $g$ does not appear in the
+environment we return the empty list from the environment lookup, and
+hence the `application' we construct will simply be the variable
+$g$!
+
+3-> abstractJ_e env (free, AVar g)
+M3-> = foldll EAp (EVar g) (map EVar (aLookup env g []))
+GH3->  = foldll EAp (EVar g) (map EVar (aLookup env g []))
+
+\par
+Sometimes we may find a lambda abstraction on its own; for example:
+\begin{verbatim}
+	f xs = map (\x. x+1) xs
+\end{verbatim}
+The @\x@-abstraction is not the right-hand side of a @let(rec)@
+definition, so we treat it in just same way as we did in the simple
+lambda lifter (see the @ELam@ case of @abstract@).
+
+There is just one important difference.  Since @abstractJ_e@ is
+simultaneously performing a substitution on the expression, the
+free-variables information does not reflect the post-substitution
+state of affairs.  Rather, we need to perform the substitution on the
+free-variable set too, to find what variables are free in the result.
+This is done by the function @actualFreeList@, which is defined at the
+end of this section.  It was the need to perform this operation on the
+free-variable information which guided our choice of environment
+representation.
+
+3-> abstractJ_e env (free, ALam args body)
+M3-> = foldll EAp sc (map EVar fv_list)
+M3->   where
+M3->   fv_list = actualFreeList env free
+M3->   sc = ELet nonRecursive [("sc",sc_rhs)] (EVar "sc")
+M3->   sc_rhs = ELam (fv_list ++ args) (abstractJ_e env body)
+GH3->  = foldll EAp sc (map EVar fv_list)
+GH3->    where
+GH3->    fv_list = actualFreeList env free
+GH3->    sc = ELet nonRecursive [("sc",sc_rhs)] (EVar "sc")
+GH3->    sc_rhs = ELam (fv_list ++ args) (abstractJ_e env body)
+
+\par
+Lastly, we treat @let(rec)@ expressions.  Each variable bound to a
+lambda abstraction will be turned into a supercombinator, while the
+others (not bound to a lambda abstraction) will not.  It follows that
+we need to treat separately these two kinds of definitions, which we
+call `function definitions' and `variable definitions'
+respectively.
+
+3-> abstractJ_e env (free, ALet isrec defns body)
+M3-> = ELet isrec (fun_defns' ++ var_defns') body'
+M3->   where
+M3->   fun_defns = [(name,rhs) | (name,rhs) <- defns;   isALam rhs ]
+M3->   var_defns = [(name,rhs) | (name,rhs) <- defns; ~(isALam rhs)]
+GH3->  = ELet isrec (fun_defns' ++ var_defns') body'
+GH3->    where
+GH3->    fun_defns = [(name,rhs) | (name,rhs) <- defns,  isALam rhs ]
+GH3->    var_defns = [(name,rhs) | (name,rhs) <- defns,  not (isALam rhs)]
+
+\par
+Now that we have separated the function definitions from the variable
+definitions we can compute the set of variables to abstract from the
+functions.  We take the union of the free variables of the function
+definitions, remove from this set the function names being bound, and
+then use @actualFreeList@ (for the same reason as in the @ELam@
+equation) to get the result:
+
+M3->   fun_names = bindersOf fun_defns
+M3->   free_in_funs = setSubtraction
+M3->                       (setUnionList [freeVarsOf rhs | (name,rhs)<-fun_defns])
+M3->                       (setFromList fun_names)
+M3->   vars_to_abstract = actualFreeList env free_in_funs
+GH3->    fun_names = bindersOf fun_defns
+GH3->    free_in_funs = setSubtraction
+GH3->                        (setUnionList [freeVarsOf rhs | (name,rhs)<-fun_defns])
+GH3->                        (setFromList fun_names)
+GH3->    vars_to_abstract = actualFreeList env free_in_funs
+
+Next, we compute the new environment, to be used in the right-hand
+sides and in the body of the @let(rec)@:
+
+M3->   body_env = [(fun_name, vars_to_abstract) | fun_name <- fun_names] ++ env
+M3->   rhs_env = body_env, isrec
+M3->           = env,      ~isrec
+GH3->    body_env = [(fun_name, vars_to_abstract) | fun_name <- fun_names] ++ env
+GH3->    rhs_env | isrec     = body_env
+GH3->            | otherwise = env
+
+Lastly, we compute the new function definitions, variable definitions
+and body, by recursively using @abstractJ_E@ with the appropriate
+environment:
+
+M3->   fun_defns' = [ (name, ELam (vars_to_abstract ++ args)
+M3->                              (abstractJ_e rhs_env body))
+M3->                | (name, (free, ALam args body)) <- fun_defns
+M3->                ]
+M3->   var_defns' = [(name, abstractJ_e rhs_env rhs) | (name, rhs) <- var_defns]
+M3->   body' = abstractJ_e body_env body
+GH3->    fun_defns' = [ (name, ELam (vars_to_abstract ++ args)
+GH3->                               (abstractJ_e rhs_env body))
+GH3->                 | (name, (free, ALam args body)) <- fun_defns
+GH3->                 ]
+GH3->    var_defns' = [(name, abstractJ_e rhs_env rhs) | (name, rhs) <- var_defns]
+GH3->    body' = abstractJ_e body_env body
+
+\par
+The function @actualFreeList@ takes the environment and a set of free
+variables, applies the environment to the set, and returns a list
+(without duplicates) of the post-substitution free variables.
+
+M3-> actualFreeList :: assoc name [name] -> set name -> [name]
+GH3-> actualFreeList :: ASSOC Name [Name] -> Set Name -> [Name]
+3-> actualFreeList env free
+M3-> = setToList (setUnionList [ setFromList (aLookup env name [name])
+M3->                           | name <- setToList free
+M3->                           ])
+GH3->  = setToList (setUnionList [ setFromList (aLookup env name [name])
+GH3->                            | name <- setToList free
+GH3->                            ])
+
+The function @isALam@ identifies @ALam@ constructors.
+
+M3-> isALam :: annExpr * ** -> bool
+GH3-> isALam :: AnnExpr a b -> Bool
+3-> isALam (free, ALam args body) = True
+3-> isALam other                  = False
+
+This concludes the Johnsson-style lambda lifter.
+
+\begin{exercise}
+Add a case for @case@ expressions to the function @abstractJ_e@.
+\end{exercise}
+
+\subsection{A tricky point\advanced}
+
+When a @letrec@ contains a mixture of function and variable
+definitions, the lambda lifter we have designed may introduce some
+redundant parameters.  For example, consider the definition
+\begin{verbatim}
+	f x y = letrec
+		  g = \p. h p + x ;
+		  h = \q. k + y + q;
+		  k = g y
+		in
+		g 4 ;
+\end{verbatim}
+The free variables of the @g@/@h@ group are @x@, @y@ and @k@, so we
+will transform to:
+\begin{verbatim}
+	f x y = letrec
+		   k = g x y k y
+		in
+		g 4
+
+	g x y k p = h x y k p + x ;
+	h x y k q = k + y + q;
+\end{verbatim}
+Here the extra parameter @x@ is not actually used in @h@, so better
+definitions for @g@ and @h@ would be
+\begin{verbatim}
+	g x y k p = h y k p + x ;
+	h y k q = k + y + q;
+\end{verbatim}
+
+\begin{exercise}\advanced
+Modify @abstractJ@ to solve perform this more sophisticated transformation.
+Warning: this is quite a difficult job!
+\end{exercise}
+
+%****************************************************************
+%*                                                              *
+	\section{Mark~4: A separate full laziness pass\index{lambda lifter!Mark 4}\index{full laziness}}
+	\label{ll:mk2}
+%*                                                              *
+%****************************************************************
+
+We now turn our attention to an important property of functional programs
+called \stressD{full laziness}.
+Previous accounts of full laziness have invariably linked it to lambda
+lifting, by describing `fully lazy lambda lifting', which turns out
+to be rather a complex process.  \cite{HughesThesis} gives an
+algorithm, but it is extremely subtle and does not handle @let(rec)@
+expressions.  On the other hand, \cite{PJBook} does cover @let(rec)@
+expressions, but the description is only informal and no algorithm is
+given.
+
+In this section we show how full laziness and lambda lifting can be
+cleanly separated.  This is done by means of a transformation
+involving @let@ expressions.  Lest it be supposed that we have
+simplified things in one way only by complicating them in another, we
+also show that performing fully lazy lambda lifting without @let(rec)@
+expressions risks an unexpected loss of laziness.  Furthermore, much
+more efficient code can be generated for @let(rec)@ expressions in later
+phases of most compilers than for their equivalent lambda expressions.
+
+\subsection{A review of full laziness}
+
+We begin by briefly reviewing the concept of full laziness.
+Consider again the example given in Section~\ref{ll:mk1}.
+\begin{verbatim}
+	f x = let g = \y. x*x + y in (g 3 + g 4)
+	main = f 6
+\end{verbatim}
+The simple lambda lifter generates the program:
+\begin{verbatim}
+	$g x y = x*x + y
+	f x = let g = $g x in (g 3 + g 4)
+	main = f 6
+\end{verbatim}
+In the body of @f@ there are two calls to @g@ and hence to @$g@.
+But @($g x)@ is not a reducible expression, so
+@x*x@ will be computed twice.  But @x@ is fixed in the body of @f@, so
+some work is being duplicated.  It would be better to share the
+calculation of @x*x@ between the two calls to @$g@.  This can be
+achieved as follows: instead of making @x@ a parameter to @$g@, we
+make @x*x@ into a parameter, like this:
+\begin{verbatim}
+	$g p y = p + y
+	f x = let g = $g (x*x) in (g 3 + g 4)
+\end{verbatim}
+(we omit the definition of @main@ from now on, since it does not
+change).  So a fully lazy lambda lifter will make each {\em maximal
+free sub-expresssion\/} (rather than each free variable)
+of a lambda abstraction into an argument of the
+corresponding supercombinator.  A maximal free expression\index{maximal free expression} (or MFE) of
+a lambda abstraction is an expression which contains no occurrences of
+the variable bound by the abstraction, and is not a sub-expression of
+a larger expression with this property.
+
+Full laziness corresponds precisely to moving a loop-invariant
+expression outside the loop, so that it is computed just once at the
+beginning rather than once for each loop iteration.
+
+How important is full laziness for `real' programs?
+No serious studies have yet been made of this question, though we plan to
+do so.
+However, recent work by Holst
+suggests that the importance of full laziness may be greater than
+might at first be supposed \cite{Holst}.
+He shows how to perform a transformation which automatically enhances the
+effect of full laziness, to the point where the optimisations obtained
+compare favourably with those gained by partial
+evaluation \cite{Mix}, though with much less effort.
+
+\subsection{Fully-lazy lambda lifting in the presence of @let(rec)@s}
+
+Writing a fully lazy lambda lifter, as outlined in the previous
+section, is surprisingly difficult.  Our language, which includes
+@let(rec)@ expressions, appears to make this worse by introducing a new
+language construct.  For example, suppose the definition of @g@ in our
+running example was slightly more complex, thus:
+\begin{verbatim}
+	g = \y. let z = x*x
+		in let p = z*z
+		in p + y
+\end{verbatim}
+Now, the sub-expression @x*x@ is an MFE of the
+@\y@-abstraction, but sub-expression @z*z@ is not since @z@ is bound
+inside the @\y@-abstraction.  Yet it is clear that @p@ depends only on
+@x@ (albeit indirectly), and so we should ensure that @z*z@ is only
+computed once.
+
+Does a fully lazy lambda lifter spot this if @let@ expressions are coded
+as lambda applications?  No, it does not.  The definition of @g@ would
+become
+\begin{verbatim}
+	g = \y. (\z. (\p. p+y) (z*z)) (x*x)
+\end{verbatim}
+Now, @x*x@ is free as before, but @z*z@ is not.  In other words, {\em
+if the compiler does not treat @let(rec)@ expressions specially, it may
+lose full laziness which the programmer might reasonably expect to
+be preserved}.
+
+Fortunately, there is a straightforward way to handle
+@let(rec)@ expressions -- described in \cite[Chapter~15]{PJBook} --
+namely to `float' each @let(rec)@ definition outward until it is
+outside any lambda abstraction in which it is free.  For example, all
+we need do is transform the definition of @g@ to the following:
+\begin{verbatim}
+	g = let z = x*x
+	    in let p = z*z
+	    in \y. p + y
+\end{verbatim}
+Now @x*x@ and @z*z@ will each be computed only once.  Notice that this
+property should hold {\em for any implementation of the language}, not
+merely for one based on lambda lifting and graph reduction.  This is a
+clue that full laziness and lambda lifting are not as closely related
+as at first appears, a topic to which we will return in the next
+section.
+
+Meanwhile, how can we decide how far out to float a definition?  It is
+most easily done by using {\em lexical level numbers\/}\index{lexical
+level number} (or {\em de Bruijn numbers\/}\index{de Bruijn numbers}).
+There are three steps:
+\begin{itemize}
+\item
+First, assign to each lambda-bound variable a level number, which
+says how many lambdas enclose it.   Thus in our example,
+@x@ would be assigned level number 1, and @y@ level number 2.
+\item
+Now, assign a level number to each @let(rec)@-bound variable (outermost
+first), which is the maximum of the level numbers of its free
+variables, or zero if there are none.
+In our example, both @p@ and @z@ would be assigned level
+number 1.  Some care needs to be taken to handle @letrec@s correctly.
+
+\item
+Finally, float each definition (whose binder has level $n$, say)
+outward, until it is outside the lambda abstraction whose binder has
+level $n+1$, but still inside the level-$n$ abstraction.  There is
+some freedom in this step about exactly where between the two the
+definition should be placed.
+\end{itemize}
+
+Each mutually recursive set of definitions defined in a @letrec@
+should be floated out together, because they depend on each other and
+must remain in a single @letrec@.  If, in fact, the definitions are
+{\em not\/} mutually recursive despite appearing in the same @letrec@,
+this policy might lose laziness by retaining in an inner scope a
+definition which could otherwise be floated further outwards.  The
+standard solution is to perform {\em dependency
+analysis\/}\index{dependency analysis!effect on full laziness} on the
+definitions in each @letrec@ expression, to break each group of
+definitions into its minimal subgroups.  We will look at this in
+Section~\ref{sect:dependency}.
+
+Finally, a renaming pass should be carried out before the floating
+operation, so that there is no risk that the bindings will be altered
+by the movement of the @let(rec)@ definitions.  For example, the
+expression
+\begin{verbatim}
+	\y. let y = x*x in y
+\end{verbatim}
+is obviously not equivalent to
+\begin{verbatim}
+	let y = x*x in \y->y
+\end{verbatim}
+All that is required is to give every binder a unique name to
+eliminate the name clash.
+
+\subsection{Full laziness without lambda lifting}
+
+At first it appears that the requirement to float @let(rec)@s outward in
+order to preserve full laziness merely further complicates the already
+subtle fully lazy lambda lifting algorithm suggested by Hughes.
+However, a simple transformation allows {\em all\/} the full laziness to
+be achieved by @let(rec)@ floating, while lambda lifting is performed by
+the original simple lambda lifter.
+
+The transformation is this: {\em before floating @let(rec)@ definitions,
+replace each MFE $e$ with the expression @let v = @$e$@ in v@}.  This
+transformation both gives a name to the MFE and makes it accessible to
+the @let(rec)@ floating transformation, which can now float out the new
+definitions.  Ordinary lambda lifting can then be performed.  For
+example, consider the original definition of @g@:
+\begin{verbatim}
+	f x = let g = \y. x*x + y
+	      in (g 3 + g 4)
+	main = f 6
+\end{verbatim}
+The sub-expression @x*x@ is an MFE, so it
+is replaced by a trivial @let@ expression:
+\begin{verbatim}
+	f x = let g = \y. (let v = x*x in v) + y
+	      in (g 3 + g 4)
+	main = f 6
+\end{verbatim}
+Now the @let@ expression is floated outward:
+\begin{verbatim}
+	f x = let g = let v = x*x in \y. v + y
+	      in (g 3 + g 4)
+	in
+	f 6
+\end{verbatim}
+Finally, ordinary lambda lifting will discover that @v@ is free in the
+@\y@-abstraction, and the resulting program becomes:
+\begin{verbatim}
+	$g v y = v + y
+	f x = let g = let v = x*x in $g v
+	      in (g 3 + g 4)
+	main = f 6
+\end{verbatim}
+
+A few points should be noted here.
+Firstly, the original definition of a maximal free expression
+was relative to a {\em particular\/} lambda abstraction.
+The new algorithm we have just developed transforms certain expressions
+into trivial @let@ expressions.
+Which expressions are so transformed?  Just the ones which are MFEs of
+{\em any\/} enclosing lambda abstraction.  For example, in the expression:
+\begin{verbatim}
+	\y. \z. (y + (x*x)) / z
+\end{verbatim}
+two MFEs are identified: @(x*x)@, since it is an MFE of the @\y@-abstraction,
+and @(y + (x*x))@, since it is an MFE of the @\z@-abstraction.
+After introducing the trivial @let@ bindings, the expression becomes
+\begin{verbatim}
+	\y. \z. (let v1 = y + (let v2 = x*x in v2) in v1) / z
+\end{verbatim}
+
+Secondly, the
+newly introduced variable @v@ must either be unique, or the expression
+must be uniquely renamed after the MFE-identification pass.
+
+Thirdly, in the final form of the program @v@ is only referenced once,
+so it would be sensible to replace the reference by the right-hand side
+of the definition and eliminate the definition, yielding exactly the
+program we obtained using Hughes's algorithm.  This is a straightforward
+transformation, and we will not discuss it further here, except to note that
+this property will hold
+for all @let@ definitions which are floated out past a lambda.
+In any case, many compiler back ends will generate the same code
+regardless of whether or not the transformation is performed.
+
+\subsection{A fully lazy lambda lifter}
+
+Now we are ready to define the fully lazy lambda lifter.  It can be
+decomposed into the following stages:
+\begin{itemize}
+\item
+First we must make sure that each @ELam@ constructor and supercombinator
+definition binds only a
+single argument, because the fully lazy lambda lifter must treat each
+lambda individually.  It would be possible to encode this in later
+phases of the algorithm, by dealing with a list of arguments, but it
+turns out that we can express an important optimisation by altering
+this pass alone.
+
+M4-> separateLams :: coreProgram -> coreProgram
+GH4-> separateLams :: CoreProgram -> CoreProgram
+
+\item
+First we annotate all binders and expressions with level numbers,
+which we represent by natural numbers starting with zero:
+
+M4-> level == num
+GH4-> type Level = Int
+M4-> addLevels :: coreProgram -> annProgram (name, level) level
+GH4-> addLevels :: CoreProgram -> AnnProgram (Name, Level) Level
+
+\item
+Next we identify all MFEs, by replacing them with trivial
+@let@ expressions.  Level numbers are no longer required on every
+sub-expression, only on binders.
+
+M4-> identifyMFEs :: annProgram (name, level) level -> program (name, level)
+GH4-> identifyMFEs :: AnnProgram (Name, Level) Level -> Program (Name, Level)
+
+\item
+A renaming pass makes all binders unique, so that floating does not
+cause name-capture errors.  This must be done after @identifyMFEs@,
+which introduces new bindings.  Sadly, this means that we cannot
+use our current @rename@ function because it works on a @coreProgram@,
+whereas @identifyMFEs@ has produced a @program (name, level)@.
+We invent a new function @renameL@ for the purpose:
+
+M4-> renameL ::  program (name, *) -> program (name, *)
+GH4-> renameL ::  Program (Name, a) -> Program (Name, a)
+
+\item
+Now the @let(rec)@ definitions can be floated outwards.  The level
+numbers are not required any further.
+
+M4-> float :: program (name,level) -> coreProgram
+GH4-> float :: Program (Name,Level) -> CoreProgram
+
+\par
+\item
+Finally, ordinary lambda lifting can be carried out, using
+@lambdaLift@ from Section~\ref{ll:mk1-imp}.
+
+\end{itemize}
+The fully lazy lambda lifter is just the composition of these passes:
+
+4-> fullyLazyLift = float . renameL . identifyMFEs . addLevels . separateLams
+4-> runF          = pprint . lambdaLift . fullyLazyLift . parse
+
+As before, we leave most of the equations
+for @case@ expressions as an exercise.
+
+\subsection{Separating the lambdas}
+\label{separatelams}
+
+We define @separateLams@ in terms of an auxiliary function @separateLams_e@,
+which recursively separates variables bound in lambda abstractions in
+expressions:
+
+M4-> separateLams_e :: coreExpr -> coreExpr
+GH4-> separateLams_e :: CoreExpr -> CoreExpr
+4-> separateLams_e (EVar v) = EVar v
+4-> separateLams_e (EConstr t a) = EConstr t a
+4-> separateLams_e (ENum n) = ENum n
+4-> separateLams_e (EAp e1 e2) = EAp (separateLams_e e1) (separateLams_e e2)
+4-> separateLams_e (ECase e alts)
+M4-> = ECase (separateLams_e e) [ (tag, args, separateLams_e e)
+M4->                            | (tag, args, e) <- alts
+M4->                            ]
+GH4->  = ECase (separateLams_e e) [ (tag, args, separateLams_e e)
+GH4->                             | (tag, args, e) <- alts
+GH4->                             ]
+4->
+4-> separateLams_e (ELam args body) = mkSepLams args (separateLams_e body)
+4->
+4-> separateLams_e (ELet is_rec defns body)
+M4-> = ELet is_rec [(name, separateLams_e rhs) | (name,rhs) <- defns]
+M4->              (separateLams_e body)
+GH4->  = ELet is_rec [(name, separateLams_e rhs) | (name,rhs) <- defns]
+GH4->               (separateLams_e body)
+
+4-> mkSepLams args body = foldr mkSepLam body args
+4->                       where mkSepLam arg body = ELam [arg] body
+
+\par
+Now we return to the top-level function @separateLams@.
+The interesting question is what to do about supercombinator definitions.
+The easiest thing to do is to turn them into the equivalent
+lambda abstractions!
+
+4-> separateLams prog = [ (name, [], mkSepLams args (separateLams_e rhs))
+4->                     | (name, args, rhs) <- prog
+4->                     ]
+
+\subsection{Adding level numbers}
+\label{levels}
+
+There are a couple of complications concerning annotating an expression
+with level numbers.
+At first it looks as though it is sufficient to write a function which
+returns an expression annotated with level numbers; then for an
+application, for example, one simply takes the maximum of the levels
+of the two sub-expressions.  Unfortunately, this approach loses too
+much information, because there is no way of mapping the level number
+of the {\em body\/} of a lambda abstraction to the level number of the
+abstraction {\em itself}.  The easiest solution is first to annotate
+the expression with its free variables, and then use a mapping
+@freeSetToLevel@ from variables to level numbers, to convert the
+free-variable annotations to level numbers.
+
+M4-> freeSetToLevel :: assoc name level -> set name -> level
+GH4-> freeSetToLevel :: ASSOC Name Level -> Set Name -> Level
+4-> freeSetToLevel env free
+M4-> = max (0:[aLookup env n 0 | n <- setToList free])
+M4->   || If there are no free variables, return level zero
+GH4->  = foldll max 0 [aLookup env n 0 | n <- setToList free]
+GH4->    -- If there are no free variables, return level zero
+
+\par
+The second complication concerns @letrec@ expressions.  What is the
+correct level number to attribute to the newly introduced variables?
+The right thing to do is to take the maximum of the levels of the free
+variables of all the right-hand sides {\em without\/} the recursive
+variables, or equivalently map the recursive variables to level zero
+when taking this maximum.  This level should be attributed to each of
+the new variables.  @let@ expressions are much simpler: just attribute
+to each new variable the level number of its right-hand side.
+
+Now we are ready to define @addLevels@.  It is the composition of two
+passes, the first of which annotates the expression with its free
+variables, while the second uses this information to generate
+level-number annotations.
+
+4-> addLevels = freeToLevel . freeVars
+
+We have defined the @freeVars@ function already, so it remains to
+define @freeToLevel@.  The main function will need to carry around the
+current level, and a mapping from variables to level numbers, so as
+usual we define @freeToLevel@ in terms of @freeToLevel_e@ which does
+all the work.
+
+M4-> freeToLevel_e :: level                    -> || Level of context
+M4->                  assoc name level         -> || Level of in-scope names
+M4->                  annExpr name (set name)  -> || Input expression
+M4->                  annExpr (name, level) level || Result expression
+GH4-> freeToLevel_e :: Level                    -> -- Level of context
+GH4->                  ASSOC Name Level         -> -- Level of in-scope names
+GH4->                  AnnExpr Name (Set Name)  -> -- Input expression
+GH4->                  AnnExpr (Name, Level) Level -- Result expression
+
+\par
+We represent the name-to-level mapping as an association list, with
+type @assoc name level@.  The interface of association lists is given
+in Appendix~\ref{sect:utils}, but notice that it is {\em not\/}
+abstract.  It is so convenient to use all the standard functions on
+lists, and notation for lists, rather than to invent their analogues
+for associations, that we have compromised the abstraction.
+
+Now we can define @freeToLevel@, using an auxiliary function to
+process each supercombinator definition.  Remember that @separateLams@
+has removed all the arguments from supercombinator definitions:
+
+4-> freeToLevel prog = map freeToLevel_sc prog
+>
+4-> freeToLevel_sc (sc_name, [], rhs) = (sc_name, [], freeToLevel_e 0 [] rhs)
+
+\par
+For constants, variables and applications, it is simpler and more
+efficient to ignore the free-variable information and calculate the
+level number directly.
+
+4-> freeToLevel_e level env (free, ANum k) = (0, ANum k)
+4-> freeToLevel_e level env (free, AVar v) = (aLookup env v 0, AVar v)
+
+4-> freeToLevel_e level env (free, AConstr t a) = (0, AConstr t a)
+
+4-> freeToLevel_e level env (free, AAp e1 e2)
+M4-> = (max [levelOf e1', levelOf e2'], AAp e1' e2')
+M4->    where
+M4->    e1' = freeToLevel_e level env e1
+M4->    e2' = freeToLevel_e level env e2
+GH4->  = (max (levelOf e1') (levelOf e2'), AAp e1' e2')
+GH4->     where
+GH4->     e1' = freeToLevel_e level env e1
+GH4->     e2' = freeToLevel_e level env e2
+
+\par
+The same cannot be done for lambda abstractions; so we must compute
+the level number of the abstraction using @freeSetToLevel@.
+We also assign a level number to each variable
+in the argument list.  At
+present we expect there to be only one such variable, but we will
+allow there to be several and assign them all the same level number.
+This works correctly now, and turns out to be just what is needed to
+support a useful optimisation later (Section~\ref{sect:redundant}).
+
+4-> freeToLevel_e level env (free, ALam args body)
+M4-> = (freeSetToLevel env free, ALam args' body')
+M4->   where
+M4->   body' = freeToLevel_e (level + 1) (args' ++ env) body
+M4->   args' = [(arg, level+1) | arg <- args]
+GH4->  = (freeSetToLevel env free, ALam args' body')
+GH4->    where
+GH4->    body' = freeToLevel_e (level + 1) (args' ++ env) body
+GH4->    args' = [(arg, level+1) | arg <- args]
+
+\par
+@let(rec)@ expressions follow the scheme outlined at the beginning of this
+section.
+
+4-> freeToLevel_e level env (free, ALet is_rec defns body)
+M4-> = (levelOf new_body, ALet is_rec new_defns new_body)
+M4->   where
+M4->   binders = bindersOf defns
+M4->   rhss = rhssOf defns
+M4->
+M4->   new_binders = [(name,max_rhs_level) | name <- binders]
+M4->   new_rhss = map (freeToLevel_e level rhs_env) rhss
+M4->   new_defns = zip2 new_binders new_rhss
+M4->   new_body = freeToLevel_e level body_env body
+M4->
+M4->   free_in_rhss = setUnionList [free | (free,rhs) <- rhss]
+M4->   max_rhs_level = freeSetToLevel level_rhs_env free_in_rhss
+M4->
+M4->   body_env      = new_binders ++ env
+M4->   rhs_env       = body_env,                                   is_rec
+M4->                 = env,                                        otherwise
+M4->   level_rhs_env = [(name,0) | name <- binders] ++ env,        is_rec
+M4->                 = env,                                        otherwise
+GH4->  = (levelOf new_body, ALet is_rec new_defns new_body)
+GH4->    where
+GH4->    binders = bindersOf defns
+GH4->    rhss = rhssOf defns
+GH4->
+GH4->    new_binders = [(name,max_rhs_level) | name <- binders]
+GH4->    new_rhss = map (freeToLevel_e level rhs_env) rhss
+GH4->    new_defns = zip2 new_binders new_rhss
+GH4->    new_body = freeToLevel_e level body_env body
+GH4->
+GH4->    free_in_rhss = setUnionList [free | (free,rhs) <- rhss]
+GH4->    max_rhs_level = freeSetToLevel level_rhs_env free_in_rhss
+GH4->
+GH4->    body_env      = new_binders ++ env
+GH4->    rhs_env | is_rec           = body_env
+GH4->            | otherwise        = env
+GH4->    level_rhs_env |  is_rec    = [(name,0) | name <- binders] ++ env
+GH4->                  |  otherwise = env
+
+
+%       David's version: is buggy
+%
+%> freeToLevel_e level env (free, ALet is_rec defns body) =
+%>   (levelOf body', ALet is_rec defns' body')
+%>   where
+%>   defns' = map freeToLevel_d defns
+%>   envBody = bindersOf defns' ++ env
+%>   body' = freeToLevel_e level envBody body
+%>   freeToLevel_d (name, rhs) = ((name, levelOf rhs'), rhs')
+%>                               where rhs' = freeToLevel_e level envRhs rhs
+%>   envRhs = [(name,0) | (name, exp) <- defns] ++ env, is_rec
+%>          = env, otherwise
+Notice that the level of the whole @let(rec)@ expression is that of
+the body.  This is valid provided the body refers to all the binders
+directly or indirectly.  If any definition is unused, we might assign
+a level number to the @letrec@ which would cause it to be floated
+outside the scope of some variable mentioned in the unused definition.
+This is easily fixed, but it is simpler to assume that the expression
+contains no redundant definitions; the dependency analysis which we
+look at in the next section will eliminate such definitions.
+
+@case@ expressions are deferred:
+
+4-> freeToLevel_e level env (free, ACase e alts)
+M4-> = freeToLevel_case level env free e alts
+GH4->  = freeToLevel_case level env free e alts
+0> freeToLevel_case free e alts = error "freeToLevel_case: not yet written"
+
+\par
+Lastly the auxiliary functions @levelOf@ extracts the level from an
+expression:
+
+M4-> levelOf :: annExpr * level -> level
+GH4-> levelOf :: AnnExpr a Level -> Level
+4-> levelOf (level, e) = level
+
+\subsection{Identifying MFEs\index{maximal free expression, identification of}}
+\label{identifyMFEs}
+
+It is simple to identify MFEs, by comparing the level number of an
+expression with the level of its context.  This requires an auxiliary
+parameter to give the level of the context.
+
+M4-> identifyMFEs_e :: level                               || Level of context
+M4->                   -> annExpr (name, level) level      || Input expression
+M4->                   -> expr (name, level)               || Result
+GH4-> identifyMFEs_e :: Level                               -- Level of context
+GH4->                   -> AnnExpr (Name, Level) Level      -- Input expression
+GH4->                   -> Expr (Name, Level)               -- Result
+
+4-> identifyMFEs prog = [ (sc_name, [], identifyMFEs_e 0 rhs)
+4->                     | (sc_name, [], rhs) <- prog
+4->                     ]
+
+\par
+Once an MFE $e$ has been identified, our strategy is to wrap it in a
+trivial @let@ expression of the form $@let v = @e@ in v@$; but not all
+MFEs deserve special treatment in this way.  For example, it would be
+a waste of time to wrap such a @let@ expression around an MFE consisting
+of a single variable or constant.  Other examples are given in
+Section~\ref{sect:redundant}.  We encode this knowledge of which MFEs
+deserve special treatment in a function @notMFECandidate@.
+
+4-> notMFECandidate (AConstr t a) = True
+4-> notMFECandidate (ANum k)      = True
+4-> notMFECandidate (AVar v)      = True
+M4-> notMFECandidate ae            = False || For now everything else
+M4->                                       ||         is a candidate
+GH4-> notMFECandidate ae            = False -- For now everything else
+GH4->                                       --         is a candidate
+
+\par
+@identifyMFEs_e@ works by comparing the level number of the expression
+with that of its context.  If they are the same, or for some other
+reason the expression is not a candidate for special treatment, the
+expression is left unchanged, except that @identifyMFEs_e1@ is used to
+apply @identifyMFEs_e@ to its sub-expressions; otherwise we use
+@transformMFE@ to perform the appropriate transformation.
+
+4-> identifyMFEs_e cxt (level, e)
+M4-> = e',                         level = cxt \/ notMFECandidate e
+M4-> = transformMFE level e',      otherwise
+M4->   where
+M4->   e' = identifyMFEs_e1 level e
+GH4->  | level == cxt || notMFECandidate e = e'
+GH4->  | otherwise = transformMFE level e'
+GH4->    where
+GH4->    e' = identifyMFEs_e1 level e
+
+4-> transformMFE level e = ELet nonRecursive [(("v",level), e)] (EVar "v")
+
+@identifyMFEs_e1@ applies @identifyMFEs_e@ to the components of the
+expression.
+
+M4-> identifyMFEs_e1 :: level                              || Level of context
+M4->                    -> annExpr' (name,level) level     || Input expressions
+M4->                    -> expr (name,level)               || Result expression
+GH4-> identifyMFEs_e1 :: Level                              -- Level of context
+GH4->                    -> AnnExpr' (Name,Level) Level     -- Input expressions
+GH4->                    -> Expr (Name,Level)               -- Result expression
+
+4-> identifyMFEs_e1 level (AConstr t a)           = EConstr t a
+4-> identifyMFEs_e1 level (ANum n)                = ENum n
+4-> identifyMFEs_e1 level (AVar v)                = EVar v
+4-> identifyMFEs_e1 level (AAp e1 e2)
+M4-> = EAp (identifyMFEs_e level e1) (identifyMFEs_e level e2)
+GH4->  = EAp (identifyMFEs_e level e1) (identifyMFEs_e level e2)
+
+\par
+When @identifyMFEs_e1@ encounters a
+binder it changes the `current' level number carried
+down as its first argument, as we can see in the equations for lambda
+abstractions and @let(rec)@ expressions:
+
+4-> identifyMFEs_e1 level (ALam args body)
+M4-> = ELam args (identifyMFEs_e arg_level body)
+M4->   where
+M4->   (name, arg_level) = hd args
+GH4->  = ELam args (identifyMFEs_e arg_level body)
+GH4->    where
+GH4->    (name, arg_level) = hd args
+
+4-> identifyMFEs_e1 level (ALet is_rec defns body)
+M4-> = ELet is_rec defns' body'
+M4->   where
+M4->   body' = identifyMFEs_e level body
+M4->   defns' = [ ((name, rhs_level), identifyMFEs_e rhs_level rhs)
+M4->            | ((name, rhs_level), rhs) <- defns
+M4->            ]
+GH4->  = ELet is_rec defns' body'
+GH4->    where
+GH4->    body' = identifyMFEs_e level body
+GH4->    defns' = [ ((name, rhs_level), identifyMFEs_e rhs_level rhs)
+GH4->             | ((name, rhs_level), rhs) <- defns
+GH4->             ]
+
+@case@ expressions are deferred:
+
+4-> identifyMFEs_e1 level (ACase e alts) = identifyMFEs_case1 level e alts
+0> identifyMFEs_case1 level e alts = error "identifyMFEs_case1: not written"
+
+\subsection{Renaming variables}
+
+As we remarked above, it would be nice to use the existing @rename@ function
+to make the binders unique, but it has the wrong type.  It would be possible
+to write @renameL@ by making a copy of @rename@ and making some small
+alterations, but it would be much nicer to make a single generic renaming
+function, @renameGen@, which can be specialised to do either @rename@
+or @renameL@.
+
+What should the type of @renameGen@ be?
+The right question to ask is: {\em `what use did we make in @rename@
+of the fact that each binder was a simple @name@?'\/} or, alternatively,
+`what operations did we perform on binders in @rename@?'.
+
+There is actually just one such operation, which constructs
+new binders.  In @rename_e@
+this function is called @newNames@; it takes a name supply and
+a list of names, and returns a depleted name supply, a list
+of new names and an association list mapping old names to
+new ones:
+
+0> newNames :: nameSupply -> [name]  -> (nameSupply, [name], assoc name name)
+
+Since @renameGen@ must be able to work over any kind of
+binder, not just those of type @name@, {\em we must pass the new-binders
+function into @renameGen@ as an extra argument}.
+So the type of @renameGen@ is:
+
+M4-> renameGen :: (nameSupply -> [*]  -> (nameSupply, [*], assoc name name))
+M4->                                       || New-binders function
+M4->              -> program *             || Program to be renamed
+M4->              -> program *             || Resulting program
+GH4-> renameGen :: (NameSupply -> [a]  -> (NameSupply, [a], ASSOC Name Name))
+GH4->                                       -- New-binders function
+GH4->              -> Program a             -- Program to be renamed
+GH4->              -> Program a             -- Resulting program
+
+Notice that the type of the binders is denoted by the type variable @*@,
+because @renameGen@ is polymorphic in this type.
+Using @renameGen@, we can now redefine the original @rename@ function,
+by passing @newNames@ to @renameGen@ as the new-binders function.
+
+4-> rename :: CoreProgram -> CoreProgram
+4-> rename prog = renameGen newNames prog
+
+\par
+@renameL@ is rather more interesting.  Its binders are @(name,level)@ pairs
+so we need to define a different new-binders function:
+
+M0> renameL :: program (name,level) -> program (name,level)
+GH0> renameL :: Program (Name,Level) -> Program (Name,Level)
+4-> renameL prog = renameGen newNamesL prog
+
+\par
+The function @newNamesL@ does just what @newNames@ does, but it does
+it for binders whose type is a @(name,level)@ pair:
+
+4-> newNamesL ns old_binders
+M4-> = (ns', new_binders, env)
+M4->   where
+M4->   old_names = [name | (name,level) <- old_binders]
+M4->   levels        = [level | (name,level) <- old_binders]
+M4->   (ns', new_names) = getNames ns old_names
+M4->   new_binders =  zip2 new_names levels
+M4->   env = zip2 old_names new_names
+GH4->  = (ns', new_binders, env)
+GH4->    where
+GH4->    old_names = [name | (name,level) <- old_binders]
+GH4->    levels        = [level | (name,level) <- old_binders]
+GH4->    (ns', new_names) = getNames ns old_names
+GH4->    new_binders =  zip2 new_names levels
+GH4->    env = zip2 old_names new_names
+
+\par
+Now we can turn our attention to writing @renameGen@.  As usual we
+need an auxiliary function @renameGen_e@ which carries around some
+extra administrative information.  Specifically, like @rename_e@, it needs to
+take a name supply and old-name to new-name mapping as arguments, and
+return a depleted supply as part of its result.  It also needs to be
+passed the new-binders function:
+
+M4-> renameGen_e :: (nameSupply -> [*]  -> (nameSupply, [*], assoc name name))
+M4->                                               || New-binders function
+M4->                -> assoc name name             || Maps old names to new ones
+M4->                -> nameSupply                  || Name supply
+M4->                -> expr *                      || Expression to be renamed
+M4->                -> (nameSupply, expr *)        || Depleted name supply
+M4->                                               || and result expression
+GH4-> renameGen_e :: (NameSupply -> [a]  -> (NameSupply, [a], ASSOC Name Name))
+GH4->                                               -- New-binders function
+GH4->                -> ASSOC Name Name             -- Maps old names to new ones
+GH4->                -> NameSupply                  -- Name supply
+GH4->                -> Expr a                      -- Expression to be renamed
+GH4->                -> (NameSupply, Expr a)        -- Depleted name supply
+GH4->                                               -- and result expression
+
+\par
+Using @renameGen_e@ we can now write @renameGen@.
+Just like @rename@,  @renameGen@
+applies a local function @rename_sc@ to each supercombinator definition.
+
+4-> renameGen new_binders prog
+M4-> = second (mapAccuml rename_sc initialNameSupply prog)
+M4->    where
+M4->    rename_sc ns (sc_name, args, rhs)
+M4->    = (ns2, (sc_name, args', rhs'))
+M4->       where
+M4->      (ns1, args', env) = new_binders ns args
+M4->      (ns2, rhs') = renameGen_e new_binders env ns1 rhs
+GH4->  = second (mapAccuml rename_sc initialNameSupply prog)
+GH4->     where
+GH4->     rename_sc ns (sc_name, args, rhs)
+GH4->      = (ns2, (sc_name, args', rhs'))
+GH4->         where
+GH4->        (ns1, args', env) = new_binders ns args
+GH4->        (ns2, rhs') = renameGen_e new_binders env ns1 rhs
+
+
+\begin{exercise}
+Write the function @renameGen_e@.  It is very like @rename_e@, except that
+it takes the binder-manipulation functions as extra arguments.
+In the equations for @ELet@, @ELam@ and @ECase@ (which each bind
+new variables), the function @newBinders@ can be used in just the same way
+as it is in @rename_sc@ above.
+
+Test your definition by checking that the simple lambda lifter still works with
+the new definition of @rename@.
+\end{exercise}
+
+\begin{exercise}
+The type signature we wrote for @renameL@ is actually slightly more restrictive
+than it need be.  How could it be made more general (without changing the code
+at all)?
+Hint: what use does @renameL@ make of the fact that the second component
+of a binder is of type @level@?
+\end{exercise}
+
+This section provides a good illustration of the way in which
+higher-order functions can help us to make programs more modular.
+
+\subsection{Floating @let(rec)@ expressions}
+\label{float}
+
+The final pass floats @let(rec)@ expressions out to the appropriate
+level.
+The auxiliary function, which works over expressions,
+has to return an expression together with the
+collection of definitions which should be floated outside the expression.
+
+M4-> float_e :: expr (name, level) -> (floatedDefns, expr name)
+GH4-> float_e :: Expr (Name, Level) -> (FloatedDefns, Expr Name)
+
+\par
+There are many possible representations for the @floatedDefns@ type,
+and we will choose a simple one, by representing the definitions being
+floated as a list, each element of which represents a group of
+definitions, identified by its level, and together with its @isRec@
+flag.
+
+M4-> floatedDefns == [(level, isRec, [(name, expr name)])]
+GH4-> type FloatedDefns = [(Level, IsRec, [(Name, Expr Name)])]
+
+Since the definitions in the list may depend on one another, we add
+the following constraint:
+\begin{important}
+a definition group may depend only on
+definition groups appearing {\em earlier\/} in the @floatedDefns@ list.
+\end{important}
+
+We can now proceed to a definition of @float_e@.  The cases for
+variables, constants and applications are straightforward.
+
+4-> float_e (EVar v) = ([], EVar v)
+4-> float_e (EConstr t a) = ([], EConstr t a)
+4-> float_e (ENum n) = ([], ENum n)
+4-> float_e (EAp e1 e2) = (fd1 ++ fd2, EAp e1' e2')
+4->                       where
+4->                       (fd1, e1') = float_e e1
+4->                       (fd2, e2') = float_e e2
+
+How far out should a definition be floated?  There is more than
+one possible choice, but here we choose to install a definition
+just inside the innermost lambda which binds one its
+free variables (recall from
+Section~\ref{levels} that all variables bound by a single @ELam@
+construct are given the same level):
+
+4-> float_e (ELam args body)
+M4-> = (fd_outer, ELam args' (install fd_this_level body'))
+M4->   where
+M4->   args' = [arg | (arg,level) <- args]
+M4->   (first_arg,this_level) = hd args
+M4->   (fd_body, body') = float_e body
+M4->   (fd_outer, fd_this_level) = partitionFloats this_level fd_body
+GH4->  = (fd_outer, ELam args' (install fd_this_level body'))
+GH4->    where
+GH4->    args' = [arg | (arg,level) <- args]
+GH4->    (first_arg,this_level) = hd args
+GH4->    (fd_body, body') = float_e body
+GH4->    (fd_outer, fd_this_level) = partitionFloats this_level fd_body
+
+\par
+The equation for a @let(rec)@ expression adds its definition group
+to those floated out from its body, and from its right-hand sides.
+The latter must come first, since the new definition group may depend on them.
+
+4-> float_e (ELet is_rec defns body)
+M4-> = (rhsFloatDefns ++ [thisGroup] ++ bodyFloatDefns, body')
+M4->   where
+M4->   (bodyFloatDefns, body') = float_e body
+M4->   (rhsFloatDefns, defns') = mapAccuml float_defn [] defns
+M4->   thisGroup = (thisLevel, is_rec, defns')
+M4->   (name,thisLevel) = hd (bindersOf defns)
+M4->
+M4->   float_defn floatedDefns ((name,level), rhs)
+M4->   = (rhsFloatDefns ++ floatedDefns, (name, rhs'))
+M4->     where
+M4->     (rhsFloatDefns, rhs') = float_e rhs
+GH4->  = (rhsFloatDefns ++ [thisGroup] ++ bodyFloatDefns, body')
+GH4->    where
+GH4->    (bodyFloatDefns, body') = float_e body
+GH4->    (rhsFloatDefns, defns') = mapAccuml float_defn [] defns
+GH4->    thisGroup = (thisLevel, is_rec, defns')
+GH4->    (name,thisLevel) = hd (bindersOf defns)
+GH4->
+GH4->    float_defn floatedDefns ((name,level), rhs)
+GH4->     = (rhsFloatDefns ++ floatedDefns, (name, rhs'))
+GH4->       where
+GH4->       (rhsFloatDefns, rhs') = float_e rhs
+
+We defer @case@ expressions:
+
+4-> float_e (ECase e alts) = float_case e alts
+0> float_case e alts = error "float_case: not yet written"
+
+\par
+The auxiliary function @partitionFloats@ takes a @floatedDefns@ and a level
+number, and separates it into two: those belonging to an outer level and
+those belonging to the specified level (or an inner one):
+
+M4-> partitionFloats :: level -> floatedDefns -> (floatedDefns, floatedDefns)
+GH4-> partitionFloats :: Level -> FloatedDefns -> (FloatedDefns, FloatedDefns)
+4-> partitionFloats this_level fds
+M4-> = (filter is_outer_level fds, filter is_this_level fds)
+M4->   where
+M4->   is_this_level  (level,is_rec,defns) = level >= this_level
+M4->   is_outer_level (level,is_rec,defns) = level <  this_level
+GH4->  = (filter is_outer_level fds, filter is_this_level fds)
+GH4->    where
+GH4->    is_this_level  (level,is_rec,defns) = level >= this_level
+GH4->    is_outer_level (level,is_rec,defns) = level <  this_level
+
+\par
+The function @install@ wraps an expression in a
+nested set of @let(rec)@s containing the specified definitions:
+
+M4-> install :: floatedDefns -> expr name -> expr name
+GH4-> install :: FloatedDefns -> Expr Name -> Expr Name
+4-> install defnGroups e
+M4-> = foldr installGroup e defnGroups
+M4->   where
+M4->   installGroup (level, is_rec, defns) e = ELet is_rec defns e
+GH4->  = foldr installGroup e defnGroups
+GH4->    where
+GH4->    installGroup (level, is_rec, defns) e = ELet is_rec defns e
+
+\par
+Finally, we can define the top-level function, @float@.  It uses @float_sc@
+to apply @float_e@ to each supercombinator, yielding a list of supercombinators,
+in just the same way as @collectSCs@ above.
+
+4-> float prog = concat (map float_sc prog)
+
+\par
+The function @float_sc@ takes a supercombinator definition to a
+list of supercombinator definitions, consisting of the transformed version
+of the original definition together with the level-zero definitions floated
+out from its body:
+
+4-> float_sc (name, [], rhs)
+M4-> = [(name, [], rhs')] ++ concat (map to_scs fds)
+M4->   where
+M4->   (fds, rhs') = float_e rhs
+M4->   to_scs (level, is_rec, defns) = map make_sc defns
+M4->   make_sc (name, rhs) = (name, [], rhs)
+GH4->  = [(name, [], rhs')] ++ concat (map to_scs fds)
+GH4->    where
+GH4->    (fds, rhs') = float_e rhs
+GH4->    to_scs (level, is_rec, defns) = map make_sc defns
+GH4->    make_sc (name, rhs) = (name, [], rhs)
+
+The top level of a program is implicitly
+mutually recursive, so we can drop the @isRec@ flags.  We also have
+to give each floated definition an empty argument list, since it is now a
+supercombinator definition.
+
+%****************************************************************
+%*                                                              *
+	\section{Mark 5: Improvements to full laziness\index{lambda lifter!Mark 5}}
+%*                                                              *
+%****************************************************************
+
+That completes the definition of the fully lazy lambda lifter.
+Its output is always correct, but it is larger and less
+efficient than it need be.  In this section we discuss some ways
+to improve the full laziness transformation.
+
+\subsection{Adding @case@ expressions}
+
+\begin{exercise}
+Write definitions for @freeToLevel_case@, @identifyMFEs_case1@
+and @float_case@.  All of them
+work in an analogous way to lambda abstractions.
+Hint: in @float_case@ take care with alternatives whose argument list
+is empty.
+\end{exercise}
+
+\subsection{Eliminating redundant supercombinators\index{redundant
+supercombinators, in lambda lifter}}
+
+Consider the Core-language expression
+\begin{verbatim}
+	\x. \y. x+y
+\end{verbatim}
+Here the @\y@-abstraction has no MFEs apart from @x@ itself, so the
+full-laziness pass will not affect the expression at all.  Unfortunately,
+the simple lambda lifter, @lambdaLift@, will then generate {\em two\/}
+supercombinators,
+one for each lambda, whereas only one is needed.
+It would be better to combine nested @ELam@
+expressions into a single @ELam@ before passing the program to @lambdaLift@,
+so that the latter would then generate just one supercombinator.
+We could do this in a separate pass, but it saves work to do it as part of
+the work of @float@.
+\begin{exercise}
+Modify the definition of the @ELam@ case of @float@ so that it combines
+nested @ELam@ constructors.  Hint: make use of the function:
+
+M5-> mkELam :: [name] -> coreExpr -> coreExpr
+GH5-> mkELam :: [Name] -> CoreExpr -> CoreExpr
+5-> mkELam args (ELam args' body) = ELam (args++args') body
+5-> mkELam args other_body        = ELam args          other_body
+
+\end{exercise}
+
+\subsection{Avoiding redundant full laziness\index{redundant full laziness}}
+\label{sect:redundant}
+
+Full laziness does not come for free.  It has two main negative effects:
+\begin{itemize}
+\item
+Multiple lambda abstractions, such as @\x y. E@, turn into one
+supercombinator under the simple scheme, but may turn into
+two under the fully lazy
+scheme.  Two reductions instead of one are therefore required to apply
+it to two arguments, which may well be more expensive.
+\item
+Lifting out MFEs removes sub-expressions from their context, and
+thereby
+reduces opportunities for a compiler to perform optimisations.  Such
+optimisations might be partially restored by an interprocedural analysis
+which figured out the contexts again, but it is better still to avoid
+creating the problem.
+\end{itemize}
+
+These points are elaborated by \cite{FairbairnRedundant} and
+\cite{GoldbergThesis}.  Furthermore, they point out that often no
+benefit arises from lifting out {\em every\/} MFE from {\em every\/}
+lambda abstraction.  In particular:
+
+\begin{itemize}
+\item
+If no partial applications of a multiple abstraction can be shared,
+then nothing is gained by floating MFEs out to {\em between\/} the
+nested abstractions.
+
+\item
+Very little is gained by lifting out an MFE that is not a reducible
+expression.  No work is shared thereby, though there may be some
+saving in storage because the closure need only be constructed once.
+This is more than outweighed by the loss of compiler optimisations
+caused by removing the expression from its context.
+\end{itemize}
+
+These observations suggest some improvements to the fully lazy lambda
+lifter, and they turn out to be quite easy to incorporate:
+\begin{itemize}
+\item If a multiple abstraction is {\em not\/} separated into separate
+@ELam@ constructors by the @separateLam@ pass, then all the variables
+bound by it will be given the {\em same\/} level number.  It follows
+that no MFE will be identified which is free in the inner abstraction
+but not the outer one.  This ensures that no MFEs will be floated out
+to between two abstractions represented by a single @ELam@
+constructor.
+
+All that is required is to modify the @separateLams@ pass to keep in a
+single @ELam@ constructor each multiple abstraction of which partial
+applications cannot be shared.  This sharing information is not
+trivial to deduce, but at least we have an elegant way to use its
+results by modifying only a small part of our algorithm.
+
+This is one reason why we allow @ELam@ constructors to take a
+list of binders.
+
+\item @identifyMFEs@ uses a predicate @notMFECandidate@ to decide
+whether to identify a particular sub-expression as an MFE.  This
+provides a convenient place to add extra conditions to exclude from
+consideration expressions which are not redexes.  This condition, too,
+is undecidable in general, but a good approximation can be made in
+many cases; for example @(+ 3)@ is obviously not a redex.
+\end{itemize}
+
+This concludes the presentation of the full laziness transformation.
+
+
+%****************************************************************
+%*                                                              *
+	\section{Mark~6: Dependency analysis\advanced\index{dependency analysis}}
+	\label{sect:dependency}
+%*                                                              *
+%****************************************************************
+
+Consider the Core-language definition
+\begin{verbatim}
+	f x = let
+		g = \y. letrec
+			  h = y+1 ;
+			  k = x+2
+			in
+			h+k
+	      in
+	      g 4
+\end{verbatim}
+The inner @letrec@ is not recursive at all!  The program is equivalent to
+the following:
+\begin{verbatim}
+	f x = let
+		g = \y. let h = y+1 in
+			let k = x+2 in
+			h+k
+	      in
+	      g 4
+\end{verbatim}
+This transformation, which breaks up @let(rec)@ blocks into
+minimal-sized groups, and always uses @let@ in preference to @letrec@,
+is called \stressD{dependency analysis}.
+
+We have already alluded to the fact that better code can be generated
+if the program has been subjected to a dependency analysis.
+This has shown up in two places:
+\begin{itemize}
+\item
+In Johnsson-style lambda lifting, we treated the free variables for a
+@letrec@ block of definitions as a single entity\index{dependency
+analysis! use in Johnsson lambda lifter}. If we could in fact break
+the @letrec@ up into smaller blocks, then there would be fewer free
+variables in each block. This will then reduce the number of free
+variables that must be added to a function definition by the
+@abstractJ@ function.
+\item
+In the full-laziness transformation we always kept the declarations in
+a @let(rec)@ block together\index{dependency analysis! use in full
+laziness}. If we first do dependency analysis, to break the
+declarations into small groups, then perhaps some of the groups could
+be floated further out than before.
+\end{itemize}
+This section explores how to do dependency analysis on Core programs.
+
+\subsection{Strongly connected components\index{strongly connected components}}
+\label{ll:SCCs}
+
+In order to discuss the dependency analysis we need to understand some
+graph theory\index{graph theory}. We therefore begin with a definition.
+\begin{definition}
+A directed graph is a tuple $(V,\,E)$ of two components:
+\begin{itemize}
+\item a set of vertices (or nodes), $V$;
+\item a set of edges, $E$. Each edge is a pair: $(v_0,\,v_1)$; where
+$v_0\in V$ is the source of the edge, and $v_1\in V$ is the target.
+\end{itemize}
+\end{definition}
+In the following expression we say that @x@ depends on @y@ and @z@, @z@
+depends on @x@ and @y@, but that @y@ does not depend on any other
+variable.
+\begin{verbatim}
+    letrec
+	x = y + 7 * tl z;
+	y = 5
+	z = (x,y)
+    in e
+\end{verbatim}
+The graph we construct for this definition block has three vertices,
+$\{@x@, @y@, @z@\}$, and the edges:
+\[
+  \{(@x@, @y@),~(@x@, @z@),~(@z@, @x@),~(@z@, @y@)\}
+\]
+The interpretation of the first edge is that @x@ {\em depends\/} on @y@,
+and the absence of any edges from @y@ means that @y@ does not depend
+on any other variables. Pictorially, the graph is as follows:
+\begin{center}
+\input{depend.tex}
+\end{center}
+Because we are not concerned with multiple edges between the same
+pairs of vertices, we can instead formulate the information about the
+edges as a map: \mbox{\it outs}.
+\begin{definition}\mbox{}
+\[
+ \mbox{\it outs} ~ v = \{v' \mathrel{|} (v,\,v') \in E\}
+\]
+\end{definition}
+The set $\mbox{\it outs}~ v$ is therefore the set of vertices that are
+targets for an edge whose source is $v$.  In the example we have just
+looked at $\mbox{\it outs}~ @x@ = \{@y@,@z@\}$, $\mbox{\it outs}~ @y@
+= \{\}$ and $\mbox{\it outs}~ @z@ = \{@x@,@y@\}$.
+
+We can construct a similar map, \mbox{\it ins}, which is dual to the
+\mbox{\it outs} map.
+
+\begin{definition}\mbox{}
+\[
+ \mbox{\it ins} ~ v = \{v' \mathrel{|} (v',\,v) \in E\}
+\]
+\end{definition}
+This is the set of vertices that are the source of an edge pointing to
+$v$. In the example we have just looked at $\mbox{\it ins}~ @x@ =
+\{@z@\}$, $\mbox{\it ins\/} @y@ = \{@x@,@z@\}$ and $\mbox{\it ins\/}
+@z@ = \{@x@\}$.
+
+\begin{definition}
+The map $r^\ast$ is the {\em transitive closure\/}\index{transitive
+closure} of the map $r$.  It can be defined recursively as:
+\begin{itemize}
+\item $a \in r^\ast ~ a$,
+\item if $b \in r^\ast ~ a$, then
+$r ~b \subseteq r^\ast~ a$.
+\end{itemize}
+\end{definition}
+The set $\mbox{\it outs}^\ast ~a$ is the set of all vertices that can
+be reached from the vertex $a$, by following the edges of the graph.
+We say that $b$ is {\em reachable\/}\index{reachability, of nodes in a
+graph} from $a$ whenever $b\in\mbox{\it outs}^\ast ~a$.  The set
+$\mbox{\it ins}^\ast~ a$ is the set of all vertices that can reach the
+vertex $a$ by following the edges of the graph.
+
+Using the running example, we have $\mbox{\it outs}^\ast~ @x@ =
+\{@x@,@y@,@z@\}$, $\mbox{\it outs}^\ast~ @y@ = \{@y@\}$, and
+$\mbox{\it outs}^\ast~ @z@ = \{@x@,@y@,@z@\}$. We also have $\mbox{\it
+ins}^\ast~ @x@ = \{@x@,@z@\}$, $\mbox{\it ins}^\ast~ @y@ =
+\{@x@,@y@,@z@\}$, and $\mbox{\it ins}^\ast~ @z@ = \{@x@,@z@\}$.
+
+We are now in a position to define a strongly connected component
+of a graph. Informally, the vertices $a$ and $b$ are in the same
+component whenever $a$ is reachable from $b$ and $b$ is reachable from
+$a$.
+\begin{definition}
+The strongly connected component of the graph containing the vertex
+$a$ is the set of vertices $\mbox{\it scc} ~a$, defined as:
+\[\mbox{\it scc} ~a = \mbox{\it outs}^\ast ~a \mathrel{\cap}
+		      \mbox{\it ins}^\ast ~a \]
+\end{definition}
+That is: a vertex $b$ is in $\mbox{\it scc} ~a$ if and only if it is
+reachable from $a$ and if $a$ is reachable from $b$. The graph in the
+running example has two strongly connected components: $\{@x@,@z@\}$
+and $\{@y@\}$.
+
+\begin{exercise}\label{ll:X:equivclass}
+Prove that the relation `in the same strongly connected component'
+partitions the set of vertices into equivalence classes.
+\end{exercise}
+
+\subsubsection{Topological sorting\index{topological sorting}}
+
+An ordering on vertices can be induced by considering the maps
+$\mbox{\it ins}^\ast$ and $\mbox{\it outs}^\ast$. This is a partial
+order which we will represent as $\preceq$.
+\begin{definition}
+The vertex $a$ is topologically less than or equal to the vertex $b$,
+written $a \preceq b$, if and only if:
+\[
+ b \in \mbox{\it outs}^\ast ~a
+\]
+\end{definition}
+In our example $@x@ \preceq @x@$, $@x@ \preceq @y@$, $@x@ \preceq
+@z@$, $@y@ \preceq @y@$, $@z@ \preceq @x@$, $@z@ \preceq @y@$ and
+$@z@ \preceq @z@$.
+
+Because the strongly connected components are disjoint, a similar
+ordering is induced on them by considering the action of $\preceq$ on
+their elements. In our running example the two components are
+ordered as: $\{@x@,@z@\}\preceq\{@y@\}$.
+\begin{definition}
+A sequence of vertices (or strongly connected components) are
+topologically sorted if, for all $a$ and $b$ in the sequence, $a$
+precedes $b$ whenever $a \preceq b$.
+\end{definition}
+So, one possible topologically sorted sequence would be:
+$[@x@,\,@z@,\,@y@]$. The other is $[@z@,\,@x@,\,@y@]$.
+
+Having now determined that the two strongly connected components are
+ordered as $\{@x@,@z@\}\preceq\{@y@\}$, we may transform the original
+expression into the following one:
+\begin{verbatim}
+    letrec
+	y = 5
+    in letrec
+	   x = y + 7 + second z
+	   z = (x, y)
+       in e
+\end{verbatim}
+We next consider efficient ways to implement the strongly connected
+component algorithm.
+
+\subsection{Implementing a strongly connected component algorithm}
+
+\subsubsection{Depth first search\index{depth first search}}
+
+We will first consider the problem of implementing a depth first
+search of a graph. The function @depthFirstSearch@ is parameterised
+over the map from vertices to their offspring; this permits us to
+reverse the direction in which the edges are traversed.  Furthermore,
+we choose to make the maps \mbox{\it ins} and \mbox{\it outs} into
+functions from vertices to sequences of vertices.  The reason for this
+change is that we have to traverse the offspring in some order and
+this is easier to arrange if we have a sequence rather than a set.
+
+M6-> depthFirstSearch :: (* -> [*])   -> || Map
+M6->                     (set *, [*]) -> || State: visited set,
+M6->                                     ||        current sequence of vertices
+M6->                     [*]          -> || Input vertices sequence
+M6->                     (set *, [*])    || Final state
+GH6-> depthFirstSearch :: Ord a =>
+GH6->                     (a -> [a])   -> -- Map
+GH6->                     (Set a, [a]) -> -- State: visited set,
+GH6->                                     --        current sequence of vertices
+GH6->                     [a]          -> -- Input vertices sequence
+GH6->                     (Set a, [a])    -- Final state
+
+\par
+The function @depthFirstSearch@ updates a state as it runs down the
+input vertex sequence, using @foldll@. The state consists of two
+parts: in the first we keep track of all of the vertices that we have
+so far visited; in the second we construct the sequence of vertices
+that we will output.
+
+6-> depthFirstSearch
+M6-> = foldll . search
+M6->   where
+GH6->  = foldll . search
+GH6->    where
+
+\par
+The key part of the depth first search is coded into @search@: if we
+have already visited the vertex then the state is unchanged.
+
+M6->   search relation (visited, sequence) vertex
+M6->   = (visited,          sequence ), setElementOf vertex visited
+GH6->    search relation (visited, sequence) vertex
+GH6->     | setElementOf vertex visited = (visited,          sequence ) -- KH
+GH6->     -- KH Was: = (visited,          sequence ), setElementOf vertex visited
+
+On the other hand, if this is the first time we have visited the
+vertex, then we must proceed to search from this vertex. When the
+state is returned from this search, we must add the current vertex to
+the sequence.
+
+M6->   = (visited', vertex: sequence'), otherwise
+M6->     where
+GH6->     | otherwise = (visited', vertex: sequence') -- KH
+GH6->     -- KH Was: = (visited', vertex: sequence'), otherwise
+GH6->       where
+
+The visited set must be updated with the current vertex, before we
+begin the search, and the list of vertices to search from is
+determined by applying the map @relation@.
+
+M6->     (visited', sequence')
+M6->     = depthFirstSearch relation
+M6->                        (setUnion visited (setSingleton vertex), sequence)
+M6->                        (relation vertex)
+GH6->       (visited', sequence')
+GH6->        = depthFirstSearch relation
+GH6->                           (setUnion visited (setSingleton vertex), sequence)
+GH6->                           (relation vertex)
+
+The result will be a set of vertices visited, and a sequence of these
+visited vertices, in topological sort order.
+
+\begin{exercise}\label{ll:X:scc-depthfirst}
+Prove the following theorem:
+\[
+ @depthFirstSearch@~ \mbox{\it outs}~ (\{\},\, []) S
+  = (V,\, S')
+\]
+where $S$ is a sequence of vertices, $V = \bigcup_{v\in S} \mbox{\it
+outs}~ v$, and $S'$ is a topologically sorted sequence of the vertices
+in $V$.
+\end{exercise}
+
+\subsubsection{Spanning search\index{spanning search, in strongly
+connected component algorithm}}
+
+The function @spanningSearch@ is a slight adaptation of the function
+@depthFirstSearch@, in which we retain the structuring information
+obtained during the search.
+
+M6-> spanningSearch   :: (* -> [*])       -> || The map
+M6->                     (set *, [set *]) -> || Current state: visited set,
+M6->                                         ||  current sequence of vertice sets
+M6->                     [*]              -> || Input sequence of vertices
+M6->                     (set *, [set *])    || Final state
+GH6-> spanningSearch   :: Ord a =>
+GH6->                     (a -> [a])       -> -- The map
+GH6->                     (Set a, [Set a]) -> -- Current state: visited set,
+GH6->                                         --  current sequence of vertice sets
+GH6->                     [a]              -> -- Input sequence of vertices
+GH6->                     (Set a, [Set a])    -- Final state
+
+Again, it is defined in terms of an auxiliary function @search@
+
+6-> spanningSearch
+
+M6-> = foldll . search
+M6->   where
+GH6->  = foldll . search
+GH6->    where
+
+If the current vertex has been visited already then we return the
+current state.
+
+M6->   search relation (visited, setSequence) vertex
+M6->   = (visited,          setSequence ), setElementOf vertex visited
+GH6->    search relation (visited, setSequence) vertex
+GH6->     | setElementOf vertex visited = (visited,          setSequence ) -- KH
+GH6->     -- KH Was: = (visited,          setSequence ), setElementOf vertex visited
+
+\par
+Alternatively, if this is the first time we have visited the current
+vertex, then we search -- using @depthFirstSearch@ -- from the current
+vertex.  The sequence that is returned constitutes the component
+associated with the current vertex. We therefore add it to the
+sequence of sets that we are constructing.
+
+M6->   = (visited', setFromList (vertex: sequence): setSequence), otherwise
+M6->     where
+M6->     (visited', sequence)
+M6->     = depthFirstSearch relation
+M6->                        (setUnion visited (setSingleton vertex), [])
+M6->                        (relation vertex)
+GH6->     | otherwise = (visited', setFromList (vertex: sequence): setSequence) -- KH
+GH6->     -- KH Was: = (visited', setFromList (vertex: sequence): setSequence)
+GH6->       where
+GH6->       (visited', sequence)
+GH6->        = depthFirstSearch relation
+GH6->                           (setUnion visited (setSingleton vertex), [])
+GH6->                           (relation vertex)
+
+\subsubsection{Strongly connected components}
+
+The strongly connected component algorithm can now be implemented as the
+following function:
+
+M6-> scc :: (* -> [*]) -> || The "ins"  map
+M6->        (* -> [*]) -> || The "outs" map
+M6->        [*]        -> || The root vertices
+M6->        [set *]       || The topologically sorted components
+GH6-> scc :: Ord a =>
+GH6->        (a -> [a]) -> -- The "ins"  map
+GH6->        (a -> [a]) -> -- The "outs" map
+GH6->        [a]        -> -- The root vertices
+GH6->        [Set a]       -- The topologically sorted components
+
+\par
+The function @scc@ consists of two passes over the graph.
+
+6-> scc ins outs
+M6-> = spanning . depthFirst
+GH6->  = spanning . depthFirst
+
+In the first we construct a topologically sorted sequence of the
+vertices of the graph.
+
+M6->   where depthFirst = second . depthFirstSearch outs (setEmpty, [])
+GH6->    where depthFirst = second . depthFirstSearch outs (setEmpty, [])
+
+In the second pass we construct the reverse of the topologically
+sorted sequence of strongly connected components.
+
+M6->         spanning   = second . spanningSearch   ins  (setEmpty, [])
+GH6->          spanning   = second . spanningSearch   ins  (setEmpty, [])
+
+\par
+Let us consider what happens when we construct the first component. At
+the head of the sequence is the vertex @a@. Any other vertices that
+satisfy $@a@ \preceq @b@$ will occur later in the sequence. There are
+no vertices satisfying $@b@ \preceq @a@$.  The call to
+@spanningSearch@ with @ins@ as its relational parameter, will
+construct $\mbox{\it ins}^\ast ~ @a@$. The visited set will be
+augmented with each vertex in the component.
+
+In the example we considered earlier, we will be applying @spanning@
+to the list $[@x@,~@z@,~@y@]$. This expands to:
+\begin{verbatim}
+	second (search ins (search ins (search ins ({},[]) x) z) y)
+\end{verbatim}
+Expanding the inner @search@ we obtain:
+\begin{verbatim}
+	second (search ins (search ins (vs, [setFromList (x:s)]) z) y)
+	where (vs,s) = depthFirstSearch ins ({x},[]) (ins x)
+\end{verbatim}
+But $@ins@~@x@ = [@z@]$; this means that $@vs@ = \{@x@,~@z@\}$ and
+$@s@ = [@z@]$. Hence we reduce the expression to:
+\begin{verbatim}
+	second (search ins (search ins ({x,z}, [{x,z}]) z) y)
+\end{verbatim}
+Because @z@ is already in the visted set, this becomes:
+\begin{verbatim}
+	second (search ins ({x,z}, [{x,z}]) y)
+\end{verbatim}
+The @search@ expands as:
+\begin{verbatim}
+	second (vs, [setFromList (y:s), {x,z}])
+	where (vs,s) = depthFirstSearch ins ({x,y,z},[]) (ins y)
+\end{verbatim}
+But $@ins@~@y@ = [@x@,~@z@]$; both of which are already visited, so
+$@vs@ = \{@x@,~@z@,~@y@\}$ and $s = []$.
+
+The final form of the expression becomes:
+\begin{verbatim}
+	[{y}, {x,z}]
+\end{verbatim}
+\begin{important}
+The visited set in @spanningSearch@ represents those vertices that
+have already been assigned to a strongly connected component.
+\end{important}
+
+When we come across a vertex in the input sequence that is already in
+the visited set, it behaves as if it had been deleted from further
+consideration. Suppose that the vertex @b@ is the next vertex in the
+input sequence that has not already been visited. When we come to
+compute
+\[
+ @depthFirstSearch@~ \mbox{\it ins}~
+  (\{@b@\}\cup @visited@,\,[])~ (\mbox{\it ins}~@b@)
+\]
+This will produce a new visited set (which will be $\mbox{\it scc}~@a@
+\mathrel{\cup} \mbox{\it scc}~@b@$) and a sequence whose elements are
+the vertices in $\mbox{\it scc}~@b@$.
+
+Note that the strongly connected components are output in reverse
+topological order.
+
+\begin{exercise}\label{ll:X:sccs}
+Let
+\[
+@scc@~ \mbox{\it ins}~\mbox{\it outs}~ R
+  = S,
+\]
+and $V = \bigcup \{\mbox{\it ins}^\ast~v \mathrel{|} v\in R\}$.
+Prove that
+\begin{itemize}
+\item firstly, that the sequence $S$ contains all of the strongly
+connected components, i.e.
+\[
+ @setFromList@~S = \bigcup \{\mbox{\it scc}~v \mathrel{|} v\in V\};
+\]
+\item secondly, that these components are in reverse topological order,
+i.e.\ if $@a@\preceq @b@$ then @b@ occurs before @a@ in the
+sequence $S$.
+\end{itemize}
+\end{exercise}
+
+\subsection{A dependency analysis}
+
+We can now perform a dependency analysis on the program. Whenever we
+come across a @let(rec)@ block we must split it into strongly connected
+components.  In the case of @let@, this is simple; there are no
+dependencies so we simply separate the list of definitions into a
+singleton list for each definition.
+
+The dependency analysis is performed by the function @dependency@.
+This uses information from a prior pass of @freeVars@ to rearrange
+@let(rec)@s; this information is then used by the auxiliary function
+@depends@.
+
+M6-> dependency :: coreProgram -> coreProgram
+GH6-> dependency :: CoreProgram -> CoreProgram
+6-> dependency =  depends . freeVars
+
+> runD = pprint . dependency . parse
+
+M6-> depends :: annProgram name (set name) -> coreProgram
+GH6-> depends :: AnnProgram Name (Set Name) -> CoreProgram
+6-> depends prog = [(name,args, depends_e rhs) | (name, args, rhs) <- prog]
+
+The work is done by @depends_e@, whose only interesting case is
+that for @let(rec)@.
+
+M6-> depends_e :: annExpr name (set name) -> coreExpr
+GH6-> depends_e :: AnnExpr Name (Set Name) -> CoreExpr
+6-> depends_e (free, ANum n)          = ENum n
+6-> depends_e (free, AConstr t a)     = EConstr t a
+6-> depends_e (free, AVar v)          = EVar v
+6-> depends_e (free, AAp e1 e2)       = EAp (depends_e e1) (depends_e e2)
+6-> depends_e (free, ACase body alts) = ECase (depends_e body)
+6->                                           [ (tag, args, depends_e e)
+6->                                           | (tag, args, e) <- alts
+6->                                           ]
+6-> depends_e (free, ALam ns body)    = ELam ns (depends_e body)
+
+In the case of @letrec@s we must construct the dependency graph, and
+then apply the @scc@ function to determine the way to split the
+definitions. If @defnGroups@ is $[d_1,\,d_2,\,\ldots,\,d_n]$ -- and we
+are processing a @letrec@ -- then the @letrec@ will be transformed to:
+\[
+ @letrec@~d_1~@in@~@letrec@~d_2~@in@~\ldots ~@letrec@~d_n~@in@~ @body@.
+\]
+
+6-> depends_e (free, ALet is_rec defns body)
+M6-> = foldr (mkDependLet is_rec) (depends_e body) defnGroups
+M6->   where
+M6->   binders    = bindersOf defns
+GH6->  = foldr (mkDependLet is_rec) (depends_e body) defnGroups
+GH6->    where
+GH6->    binders    = bindersOf defns
+
+\par
+The set of variables that we are interested in is derived from the
+@binders@, and is called the @binderSet@.
+
+M6->   binderSet  = setFromList binders, is_rec
+M6->              = setEmpty,            otherwise
+GH6->    binderSet | is_rec    = setFromList binders
+GH6->              | otherwise = setEmpty
+
+\par
+From this we can construct the @edges@ of the dependency graph.
+
+M6->   edges      = [(n, f) | (n, (free, e)) <- defns;
+M6->                          f <- setToList (setIntersection free binderSet)]
+GH6->    edges      = [(n, f) | (n, (free, e)) <- defns,
+GH6->                           f <- setToList (setIntersection free binderSet)]
+
+And thus the functions @ins@ and @outs@ required by the strongly
+connected component algorithm.
+
+M6->   ins  v     = [u | (u,w) <- edges; v=w]
+M6->   outs v     = [w | (u,w) <- edges; v=u]
+GH6->    ins  v     = [u | (u,w) <- edges, v==w]
+GH6->    outs v     = [w | (u,w) <- edges, v==u]
+
+The resulting list of sets is converted into a list of lists, called
+@components@.
+
+M6->   components = map setToList (scc ins outs binders)
+GH6->    components = map setToList (scc ins outs binders)
+
+\par
+We construct the @defnGroups@ by looking up the expression bound to
+each binder in the original definitions, @defns@:
+
+M6->   defnGroups = [ [ (n, aLookup defns n (error "defnGroups"))
+M6->                  | n <- ns]
+M6->                | ns <- components
+M6->                ]
+GH6->    defnGroups = [ [ (n, aLookup defns n (error "defnGroups"))
+GH6->                   | n <- ns]
+GH6->                 | ns <- components
+GH6->                 ]
+
+\par
+Finally, to join together each group in @defnGroups@, we define @mkDependLet@,
+which recursively does dependency analysis on each right-hand side, and
+then builds the results into a @let(rec)@ expression:
+A simple definition is:
+
+6-> mkDependLet is_rec dfs e = ELet is_rec [(n, depends_e e) | (n,e) <- dfs] e
+
+\begin{exercise}\label{ll:X:elet}
+In addition to the definition groups from non-recursive @let@s we
+sometimes get non-recursive definitions arising in @letrec@'s. This
+is the case for @y@ in the example we have used.
+
+Redefine @mkDependLet@ to make such bindings with a @let@ and not a @letrec@.
+Hint: use the free-variable information present in the right-hand sides of
+the definitions passed to @mkDependLet@.
+\end{exercise}
+
+\section{Conclusion}
+
+It is interesting to compare our approach to full laziness
+with Bird's very nice paper
+\cite{Bird} which addresses a similar
+problem.  Bird's objective is to give a formal development of an
+efficient fully lazy lambda lifter, by successive transformation of an
+initial specification.  The resulting algorithm is rather complex, and
+would be hard to write down directly, thus fully justifying the effort
+of a formal development.
+
+In contrast, we have expressed our algorithm as a composition of a
+number of very simple phases, each of which can readily be specified
+and written down directly.  The resulting program has a
+constant-factor inefficiency, because it makes many traversals of the
+expression.  This is easily removed by folding together successive
+passes into a single function, eliminating the intermediate data
+structure.  Unlike Bird's transformations, this is a straightforward
+process.
+
+Our approach has the major advantage that is is {\em modular}.
+For example:
+\begin{itemize}
+\item
+We were able to reuse existing functions on several occasions
+(@freeVars@, @rename@, @collectSCs@ and so on).
+\item
+The multi-pass approach means that each pass has a well-defined, simple
+purpose, which makes it easier to modify.
+For example, we modified the @identifyMFEs@ algorithm to be more
+selective about where full laziness is introduced
+(Section~\ref{sect:redundant}).
+\item
+We could use the major phases in various combinations to
+`snap together' a variety of transformations.
+For example, we could choose whether or not to do dependency analysis
+and
+full laziness, and which lambda lifter to use, simply by composing
+the appropriate functions at the top level.
+\end{itemize}
+The main disadvantage of our approach is that we are unable to take
+advantage of one optimisation suggested by Hughes, namely ordering the
+parameters to a supercombinator to reduce the number of MFEs.  The
+reason for this is that the optimisation absolutely requires that
+lambda lifting be entwined with the process of MFE identification,
+while we have carefully separated these activities!  Happily for us,
+the larger MFEs created by this optimisation are always partial
+applications, which should probably {\em not\/} be identified as MFEs
+because no work is shared thereby (Section \ref{sect:redundant}).  Even so,
+matters might not have fallen out so fortuitously, and our separation
+of concerns has certainly made some sorts of transformation rather
+difficult.
+
+\theendnotes
+
+% end of chap06

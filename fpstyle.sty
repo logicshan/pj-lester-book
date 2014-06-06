@@ -1,0 +1,688 @@
+% $Date: 91/08/22 15:49:30 $
+% $Revision: 1.8 $
+% (c) 1991 Simon Peyton Jones & David Lester
+%			Latex macros for
+%			Simon and David's book
+
+%****************************************************************
+%*								*
+%*	Set page layout parameters				*
+%*								*
+%****************************************************************
+
+% Margins etc
+\setlength{\oddsidemargin}{0cm}
+\setlength{\evensidemargin}{0cm}
+\setlength{\topmargin}{1cm}
+\setlength{\headheight}{0cm}
+\setlength{\headsep}{0cm}
+\setlength{\textwidth}{16cm}
+\setlength{\textheight}{23cm}
+\setlength{\marginparwidth}{1.5cm}
+
+
+% Block paragraphs
+\setlength{\parskip}{0.25cm}
+\setlength{\parindent}{0cm}
+
+% Floating figure parameters
+\renewcommand{\textfraction}{0.2}
+\renewcommand{\floatpagefraction}{0.7}
+
+% Kill  \theendnotes; only relevant for PHI version.
+\newcommand{\theendnotes}{}
+
+%****************************************************************
+%*								*
+%*	Define useful curly letters and double brackets		*
+%*								*
+%****************************************************************
+
+%	Curly letters; use in maths mode only; adds an index entry
+%
+\newcommand{\curly}[1]{{\cal #1}\index{$\protect\cal #1$}}
+
+% Curly letters and brackets
+\newcommand{\lb}{[\![}				% left double bracket
+\newcommand{\rb}{]\!]}				% right double bracket
+\newcommand{\db}[1]{\lb#1\rb}			% enclose args in double bracs
+\newcommand{\den}[2]{{\curly{#1}}\db{#2}\,}	
+\newcommand{\tr}[1]{\mbox{{\rm #1}}}		% Roman text in math mode
+
+% F[[ xxx ]]	etc	
+%	\X{thing}	X[[thing]]	(math mode only)
+%	\tX 		X		(inline text, no double brackets, 
+%						indexed)
+%	\pX		X		(just the translation to the text form)
+%
+\newcommand{\pA}{A}
+\newcommand{\pI}{I}
+\newcommand{\pJ}{J}
+\newcommand{\pB}{B}
+\newcommand{\pD}{D}
+\newcommand{\pE}{E}
+\newcommand{\pF}{F}
+\newcommand{\pR}{R}
+\newcommand{\pV}{V}
+\newcommand{\pAL}{U}
+\newcommand{\pSC}{SC}
+\newcommand{\pC}{C}
+\newcommand{\pDR}{D_{R}}
+\newcommand{\pAR}{A_{R}}
+\newcommand{\pDE}{D_{E}}
+\newcommand{\pAltE}{A_{E}}
+\newcommand{\pDB}{D_{B}}
+\newcommand{\pAB}{A_{B}}
+
+\newcommand{\A}{\den{\pA}}	\newcommand{\tA}{{$\curly{\pA}$}}
+\newcommand{\I}{\den{\pI}}	\newcommand{\tI}{{$\curly{\pI}$}}
+\newcommand{\J}{\den{\pJ}}	\newcommand{\tJ}{{$\curly{\pJ}$}}
+\newcommand{\B}{\den{\pB}}	\newcommand{\tB}{{$\curly{\pB}$}}
+\newcommand{\D}{\den{\pD}}	\newcommand{\tD}{{$\curly{\pD}$}}
+\newcommand{\E}{\den{\pE}}	\newcommand{\tE}{{$\curly{\pE}$}}
+\newcommand{\F}{\den{\pF}}	\newcommand{\tF}{{$\curly{\pF}$}}
+\newcommand{\R}{\den{\pR}}	\newcommand{\tR}{{$\curly{\pR}$}}
+\newcommand{\V}{\den{\pV}}	\newcommand{\tV}{{$\curly{\pV}$}}
+\newcommand{\AL}{\den{\pAL}}	\newcommand{\tAL}{{$\curly{\pAL}$}}
+\newcommand{\SC}{\den{\pSC}}	\newcommand{\tSC}{{$\curly{\pSC}$}}
+\newcommand{\C}{\den{\pC}}      \newcommand{\tC}{{$\curly{\pC}$}}
+\newcommand{\DR}{\den{\pDR}}   	\newcommand{\tDR}{{$\curly{\pDR}$}}
+\newcommand{\AR}{\den{\pAR}}   	\newcommand{\tAR}{{$\curly{\pAR}$}}
+\newcommand{\DE}{\den{\pDE}}    \newcommand{\tDE}{{$\curly{\pDE}$}}
+\newcommand{\AltE}{\den{\pAltE}}\newcommand{\tAltE}{{$\curly{\pAltE}$}}
+\newcommand{\DB}{\den{\pDB}}   	\newcommand{\tDB}{{$\curly{\pDB}$}}
+\newcommand{\AB}{\den{\pAB}}    \newcommand{\tAB}{{$\curly{\pAB}$}}
+
+
+% 	\plusplus, \append:	++ run together
+%
+\def\plusplus{\mathrel{+\!\!\!+}}
+\def\append{\mathrel{+\!\!\!+}}
+
+
+%****************************************************************
+%*								*
+%*	Keeping text together					*
+%*								*
+%****************************************************************
+
+% Use \begin{together}	(or \bt)
+%     \end{together}	(or \et)
+%
+% to keep a paragraph together on a single page.
+
+\newenvironment{together}%
+	{\begin{flushleft}\begin{minipage}{\textwidth}}%
+	{\end{minipage}\end{flushleft}}
+
+\newcommand{\bt}{\begin{together}}
+\newcommand{\et}{\end{together}}
+
+
+%****************************************************************
+%*								*
+%*	Environment for saying important things			*
+%*								*
+%****************************************************************
+
+% Stuff that you want to highlight specially is enclosed in the
+% important environment
+
+\newenvironment{important}{\begin{quote}\em }{\end{quote}}
+
+\newcommand{\advanced}{$\dagger$}
+
+%****************************************************************
+%*								*
+%*	Environments for exercises and solutions		*
+%*								*
+%****************************************************************
+
+%
+%		Define an "exercise" environment.
+%
+%	It numbers exercises with the form chapter.exercise,
+%	and \label{..} and \ref{..} can be used to refer to exercises.
+%
+\newcounter{exercisenumber}[chapter]
+\renewcommand{\theexercisenumber}{\thechapter.\arabic{exercisenumber}}
+\newenvironment{exercise}%
+{\refstepcounter{exercisenumber} \small
+ \begin{description} \item[Exercise \theexercisenumber.]
+}%
+{\end{description}}
+
+% 	Old version
+%\newenvironment{exercise}%
+%{\refstepcounter{exercisenumber}
+% \begin{center}
+% \begin{minipage}{0.85\textwidth}
+% \setlength{\parskip}{0.25cm}		% Necessary; I don't know why
+% {\bf Exercise \theexercisenumber.}
+% \em}%
+%{\end{minipage} \end{center}}
+
+%
+%		The "solution" environment
+%
+%	Provides the opportunity to change type face or style (not
+%	used at present), and puts a standard heading on.  The
+%	compulsory argument is the label of the corresponding exercise.
+%
+\newenvironment{solution}[1]%
+{{\bf Solution to Exercise \ref{#1}.}
+ }%
+{}
+
+
+%****************************************************************
+%*								*
+%*	Making boxes round things				*
+%*								*
+%****************************************************************
+
+% \outline{text} typesets text in a centred framed box of the width
+% of the page.
+%
+\newcommand{\outline}[1]{
+  \begin{center}
+  \fbox{
+    \begin{minipage}{\textwidth}
+    #1
+    \end{minipage}
+  }
+  \end{center}
+}
+
+%****************************************************************
+%*								*
+%*			Rules					*
+%*								*
+%****************************************************************
+
+%		A reference shorthand for rules
+%
+%	\ruleref{label} generates ``rule (xx)''
+%	\Ruleref{label} generates ``Rule (xx)''
+%
+\newcommand{\ruleref}[1]{Rule~\ref{#1}}
+\newcommand{\Ruleref}[1]{Rule~\ref{#1}}
+
+\newcounter{rulenumber}[chapter]
+\renewcommand{\therulenumber}{\thechapter.\arabic{rulenumber}}
+
+
+
+%****************************************************************
+%*                                                              *
+%*                      template transition rules               *
+%*                                                              *
+%****************************************************************
+
+
+\newcommand{\tistate}[4]{#1 & #2 & #3 & #4}
+
+%       tirule{old_state}{new_state}
+%
+\newcommand{\tirule}[2]{
+\refstepcounter{rulenumber}
+\begin{flushleft} 
+        \hspace{1em} (\therulenumber) \hspace{1em}
+        $\begin{array}{|lrrll|} \hline
+                        & #1 \\
+                        \Longrightarrow & #2 \\
+                \hline \end{array}$
+\end{flushleft}
+}
+
+%       tirulew{old_state}{new_state}{where_condition}
+%
+\newcommand{\tirulew}[3]{
+\refstepcounter{rulenumber}
+\begin{flushleft}
+        \hspace{1em} (\therulenumber) \hspace{1em}
+        $\begin{array}{|lrrll|} \hline & #1 \\ \Longrightarrow & #2
+\\
+                & \multicolumn{4}{l|}{\mbox{where}~#3} \\
+        \hline \end{array}$
+\end{flushleft}
+}
+
+%       tistateO etc are the same as tistate etc, except with an output
+%       field added.
+%
+\newcommand{\tistateO}[5]{#1 & #2 & #3 & #4 & #5}
+
+%       tirule{old_state}{new_state}
+%
+\newcommand{\tiruleO}[2]{
+\refstepcounter{rulenumber}
+\begin{flushleft}
+        \em (\therulenumber) \em
+        $\begin{array}{|llrrll|} \hline
+                & #1 \\
+                \Longrightarrow & #2 \\
+                \hline \end{array}$
+\end{flushleft}
+}
+
+%       tirulew{old_state}{new_state}{where_condition}
+%
+\newcommand{\tiruleOw}[3]{
+\refstepcounter{rulenumber}
+\begin{flushleft}
+	\hspace{1em} (\therulenumber) \hspace{1em}
+        $\begin{array}{|llrrll|} \hline & #1 \\ \Longrightarrow & #2
+\\
+                & \multicolumn{5}{l|}{\mbox{where}~#3} \\
+        \hline \end{array}$
+\end{flushleft}
+}
+
+\newcommand{\gcstate}[3]{#1 & #2 & #3}
+
+%       gcrule{old_state}{new_state}
+%
+\newcommand{\gcrule}[2]{
+\begin{flushleft} 
+\qquad   $\begin{array}{|llll|} \hline
+                        & #1 \\
+                        \Longrightarrow & #2 \\
+                \hline \end{array}$
+\end{flushleft}
+}
+
+%****************************************************************
+%*                                                              *
+%*                      G-machine transition rules              *
+%*                                                              *
+%****************************************************************
+
+% gmrule is for GM transition rules
+% instr stack heap
+\newcommand{\gmrule}[2]{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+       \hspace{1em} (\therulenumber) \hspace{1em}
+       $\begin{array}{|lrrll|}
+       \hline
+             & #1 \\
+       \Longrightarrow & #2\\ \hline
+       \end{array}$
+    \end{flushleft}
+}
+% instn stack heap gmap
+\newcommand{\gmstate}[4]{ #1 & #2 & #3 & #4 }
+\newcommand{\gmruled}[2]{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+      \hspace{1em} (\therulenumber) \hspace{1em}
+     $\begin{array}{|lrrrll|}
+       \hline
+             & #1 \\
+       \Longrightarrow & #2\\ \hline
+       \end{array}$
+    \end{flushleft}
+}
+\newcommand{\gmstated}[5]{ #1 & #2 & #3 & #4 & #5}
+
+\newcommand{\aerule}[2]{%
+\refstepcounter{rulenumber}
+\begin{flushleft}
+      \hspace{1em} (\therulenumber) \hspace{1em}
+      $\begin{array}{|lrr|}
+       \hline          & #1 \\
+       \Longrightarrow & #2\\ \hline
+       \end{array}$\end{flushleft}}
+% instn stack
+\newcommand{\aestate}[2]{ #1 & #2 }
+
+\newcommand{\gmruleod}[2]{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+    \hspace{1em} (\therulenumber) \hspace{1em}
+    $\begin{array}{|llrrrll|}
+       \hline
+             & #1 \\
+       \Longrightarrow & #2\\ \hline
+       \end{array}$
+    \end{flushleft}
+}
+\newcommand{\gmstateod}[6]{ #1 & #2 & #3 & #4 & #5 & #6}
+
+\newcommand{\gmruleodv}[2]{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+ 	\hspace{1em} (\therulenumber) \hspace{1em}
+    $\begin{array}{|llrrrrll|}
+       \hline
+             & #1 \\
+       \Longrightarrow & #2\\ \hline
+       \end{array}$
+    \end{flushleft}
+}
+\newcommand{\gmstateodv}[7]{ #1 & #2 & #3 & #4 & #5 & #6 & #7}
+
+%****************************************************************
+%*                                                              *
+%*                      TIM transition rules                    *
+%*                                                              *
+%****************************************************************
+
+
+% timstate builds a TIM state vector ready for a timrule
+%       instr env stack heap code-store
+%
+\newcommand{\timstate}[5]{ #1 & #2 & #3 & #4 & #5 }
+
+% timrule is for TIM transtion rules
+%
+\newcommand{\timrule}[2]{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+ 	\hspace{1em} (\therulenumber) \hspace{1em}
+        $\begin{array}{|lrlrll|}
+        \hline
+                        & #1 \\
+        \Longrightarrow & #2 \\ \hline
+        \end{array}$
+    \end{flushleft}
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% timstateV and timruleV are just like timstate and timrule,
+%       but with an extra component for the value stack
+%
+
+%       instr env stack value-stack heap code-store
+%
+\newcommand{\timstateV}[6]{ #1 & #2 & #3 & #4 & #5 & #6 }
+
+\newcommand{\startTimruleV}{\refstepcounter{rulenumber}
+    \begin{flushleft}
+ 	\hspace{1em} (\therulenumber) \hspace{1em}
+        $\begin{array}
+                            {|lrlrrll|}
+        \hline
+}
+\newcommand{\stopTimruleV}{  \\ \hline \end{array}$
+    \end{flushleft}
+}
+
+\newenvironment{etimruleV}{\startTimruleV}{\stopTimruleV}
+
+\newcommand{\arule}[2]{ & #1 \\ \Longrightarrow & #2 }
+
+\newcommand{\timruleV}[2]{\startTimruleV \arule{#1}{#2} \stopTimruleV}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% timruleVD is just like timruleV, but with an extra component for the
+%       dump
+%
+
+%       instr env stack value-stack dump heap code-store
+%
+\newcommand{\timstateVD}[7]{ #1 & #2 & #3 & #4 & #5 & #6 & #7 }
+
+\newcommand{\startTimruleVD}{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+ 	\hspace{1em} (\therulenumber) \hspace{1em}
+        $\begin{array}
+                            {|lrlrrrll|}
+        \hline
+}
+\newcommand{\stopTimruleVD}{%
+        \\ \hline \end{array}$
+    \end{flushleft}
+}
+\newenvironment{etimruleVD}{\startTimruleVD}{\stopTimruleVD}
+
+\newcommand{\timruleVD}[2]{\startTimruleVD \arule{#1}{#2} \stopTimruleVD}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% timruleVDD is just like timruleVD, but with an extra component for the
+%       data frame pointer
+%
+
+%       instr env data-frame-ptr stack value-stack dump heap code-store
+%
+\newcommand{\timstateVDD}[8]{ #1 & #2 & #3 & #4 & #5 & #6 & #7 & #8 }
+
+\newenvironment{etimruleVDD}{\startTimruleVDD}{\stopTimruleVDD}
+\newcommand{\startTimruleVDD}{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+ 	\hspace{1em} (\therulenumber) \hspace{1em}
+        $\begin{array}
+                            {|lrllrrrll|}
+        \hline
+}
+\newcommand{\stopTimruleVDD}{%
+        \\ \hline \end{array}$
+    \end{flushleft}
+}
+
+\newcommand{\timruleVDD}[2]{\startTimruleVDD \arule{#1}{#2} \stopTimruleVDD}
+
+
+%****************************************************************
+%*                                                              *
+%*                      Theorems and such                       *
+%*                                                              *
+%****************************************************************
+
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{theorem}[definition]{Theorem}
+
+
+%****************************************************************
+%*                                                              *
+%*                      Par G-machine transition rules          *
+%*                                                              *
+%****************************************************************
+
+% gmrule is for PGM transition rules
+% heap(L) Gmap (L) TasksPool(L) instr(R) stack(R)
+\newcommand{\pgmrule}[2]{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+ 	\hspace{1em} (\therulenumber) \hspace{1em}
+       $\begin{array}{|l@{~ \langle}lll@{\rangle ~ \langle}rr@{\rangle ~}|}
+       \hline
+             & #1 \\
+       \Longrightarrow & #2\\ \hline
+       \end{array}$
+    \end{flushleft}
+}
+% instn stack heap gmap
+\newcommand{\pgmstate}[5]{ #1 & #2 & #3 & #4 & #5 }
+
+%****************************************************************
+%*                                                              *
+%*                      Par G-machine transition rules          *
+%*                                                              *
+%****************************************************************
+
+% gmrule is for nuGM transition rules
+% heap(L) Gmap (L) TasksPool(L) Frame (L)
+\newcommand{\ngmrule}[2]{%
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+ 	\hspace{1em} (\therulenumber) \hspace{1em}
+       $\begin{array}{|lllll|}
+       \hline
+             & #1 \\
+       \Longrightarrow & #2\\ \hline
+       \end{array}$
+    \end{flushleft}
+}
+% instn stack heap gmap
+\newcommand{\ngmstate}[4]{ #1 & #2 & #3 & #4 }
+
+\newcommand{\ngmframe}[3]{\langle~ \makebox[30mm][r]{$ #1 $}~
+                                   \makebox[30mm][r]{$ #2 $}~
+                                   \makebox[10mm][r]{$ #3 $}~\rangle}
+
+\newcommand{\lngmframe}[3]{{\langle~ \makebox[30mm][r]{$ #1 $}~
+                                     \makebox[30mm][r]{$ #2 $}~
+                                     \makebox[10mm][r]{$ #3 $}~\rangle}^\ast}
+								      
+								      
+								  
+
+%****************************************************************
+%*                                                              *
+%*        Definitions for macros used in figures		*
+%*    These are produced by fig2dev, so we need defns for them	*
+%*                                                              *
+%****************************************************************
+
+%	These ones work for 11-pt typesetting
+
+\@ifundefined{selectfont} %DL is MS scheme present? 
+{}{
+\def\fiverm{\rm\tiny}		% Five pt
+\def\sevrm{\rm\scriptsize}	
+\def\sevtt{\tt\scriptsize}	
+
+\def\nintt{\tt\footnotesize}
+\def\ninrm{\rm\footnotesize}
+
+\def\tenrm{\rm\small}		% Ten pt
+\def\tentt{\tt\small}		% Ten pt
+
+\def\elvrm{\rm\normalsize}	% Eleven pt
+\def\elvit{\em\normalsize}
+
+\def\twlbf{\bf\large}		% Twelve pt
+\def\twlit{\em\large}
+\def\twltt{\tt\large}
+\def\twlrm{\rm\large}
+\def\twfvtt{\tt\large}
+
+\def\frtnrm{\rm\Large}		% Fourteen pt
+\def\frtnbf{\bf\Large}
+\def\frtnit{\em\Large}
+\def\frtntt{\tt\Large}
+
+\def\svtnsf{\sf\huge}		% Seventeen pt
+
+
+% cant remember why I need these
+\def\egt{\size{8}{9} }
+\def\elv{\size{11}{12} }
+\def\five{\size{5}{7} }
+\def\fiv{\size{5}{6} }
+\def\frtn{\size{14}{15} }
+\def\nin{\size{9}{10} }
+\def\sev{\size{7}{8} }
+\def\six{\size{6}{7} }
+\def\svtn{\size{17}{18} }
+\def\ten{\size{10}{11} }
+\def\twfv{\size{25}{27} }
+\def\twl{\size{12}{14} }
+\def\twty{\size{20}{22} }
+}
+
+%****************************************************************
+%*								*
+%*			Math codes				*
+%*								*
+%****************************************************************
+
+% Commented out because doesn't work with Glasgow Latex.
+% Still looking for a way to get the same effect... SLPJ Aug 97
+
+
+% The mathcodes for the letters A, ..., Z, a, ..., z are changed to
+% generate text italic rather than math italic by default. This makes
+% multi-letter identifiers look better. The mathcode for character c
+% is set to "7000 (variable family) + "400 (text italic) + c.
+%
+% 
+% \@ifundefined{selectfont}
+% %	No font selection
+%   {\def\@setmcodes#1#2#3{{\count0=#1 \count1=#3
+%         \loop \global\mathcode\count0=\count1 \ifnum \count0<#2
+%         \advance\count0 by1 \advance\count1 by1 \repeat}}
+% 	\@setmcodes{`A}{`Z}{"7441}
+% 	\@setmcodes{`a}{`z}{"7461}
+%   }
+% %	Font selection
+%   {\newmathalphabet{\textitt}
+%    \addtoversion{normal}{\textitt}{cmr}{m}{it}
+%    \addtoversion{bold}{\textitt}{cmr}{bx}{it}
+%    \everymath{\textitt}
+%    \everydisplay{\textitt}
+%   }
+
+\DeclareSymbolFont{italics}{\encodingdefault}{\rmdefault}{m}{it}%
+\def\@setmcodes#1#2#3{{\count0=#1 \count1=#3
+    \loop \global\mathcode\count0=\count1 \ifnum \count0<#2
+    \advance\count0 by1 \advance\count1 by1 \repeat}}
+\@setmcodes{`A}{`Z}{"7\hexnumber@\symitalics41}
+\@setmcodes{`a}{`z}{"7\hexnumber@\symitalics61}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+%****************************************************************
+%*								*
+%*	Indexing						*
+%*								*
+%****************************************************************
+
+%	Index terms with underlined entry for defining occurrence
+%
+\newcommand{\indexD}[1]{\index{#1|underline}}
+
+%	Italic terms with and without underlines
+%
+\newcommand{\stress}[1]{{\em #1}\index{#1}}
+\newcommand{\stressD}[1]{{\em #1}\indexD{#1}}
+
+%	Index terms in typewriter font
+%
+% \indexDTT underlines the entry in the index; \indexTT does not
+% 
+% Both use the form \index{this@that}
+% which says to print "that" in the index, but sort it like "this"
+%
+\newcommand{\indexTT}[1]{\index{@@#1@{\tt #1}}}
+\newcommand{\indexDTT}[1]{\index{@@#1@{\tt #1}|underline}}
+
+
+
+
+% We want to generate two indexes, so this definition re-defines
+% \theindex, so that it takes two arguments.
+%
+%	\begin{\theindex}{title}{intro}
+%
+% starts the index with given title and introductory paragraph(s).
+
+% \makeatletter
+% \def\theindex{\@restonecoltrue\if@twocolumn\@restonecolfalse\fi
+% \columnseprule \z@
+% \columnsep 35pt\twocolumn[\section*{Index}\input{index-intro}\vskip 20pt]
+% \@mkboth{INDEX}{INDEX}\thispagestyle{plain}\parindent\z@
+% \parskip\z@ plus .3pt\relax\let\item\@idxitem}
+% \makeatother
+
+\makeatletter
+\newcommand{\indexprelude}[1]{\@restonecoltrue\if@twocolumn\@restonecolfalse\fi
+ \columnseprule \z@
+ \columnsep 35pt\twocolumn[{#1}\vskip 20pt]
+ \@mkboth{INDEX}{INDEX}\thispagestyle{plain}\parindent\z@
+ \parskip\z@ plus .3pt\relax\let\item\@idxitem}
+\makeatother
+
+\def\theindex{}
+
+\def\see#1#2{{\em see\/} #1}
+
+

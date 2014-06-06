@@ -1,0 +1,378 @@
+\chapter{The Core language}
+
+The first four sections of this chapter are essential, since
+they introduce the Core language itself.
+
+The last two sections, which develop a pretty printer and parser
+for the Core language
+can be omitted if desired.
+We have included them for two reasons.  Firstly, they each
+provide a non-trivial example of functional programming.
+Secondly, in a book like this we felt it was important to
+show the {\em entire} implementation.
+
+The pretty printer uses the idea of abstract data types, and
+briefly introduces Miranda's notation for such ADTs.
+
+\section{Core language overview}
+
+\section{Syntax of the Core language}
+
+\section{Data types for the Core language}
+
+This section uses Miranda algebraic data type declarations and type
+synonyms for the first time.
+
+\section{A small standard prelude}
+
+
+
+\section{A pretty-printer for the Core language}
+
+This section contains the first substantial programming exercises.
+
+\subsection{Pretty printing using strings}
+
+\subsection{An abstract data type for pretty-printing}
+
+\begin{solution}{ex:iConcat}
+
+> iConcat = foldr iAppend iNil
+
+> iInterleave sep []         = iNil
+> iInterleave sep [seq]      = seq
+M> iInterleave sep (seq:seqs) = seq $iAppend sep $iAppend iInterleave sep seqs
+GH> iInterleave sep (seq:seqs) = seq `iAppend` (sep `iAppend` iInterleave sep seqs)
+
+\end{solution}
+
+\begin{solution}{ex:pprProgram}
+
+Here is a pretty printer for the complete Core language
+(quick fix to put binary operators in infix position -- doesn't
+include Exercise 1.8.  also modified from previous version to put
+parentheses around lambda definition to delimit definition).
+
+M> pprProgram prog = iInterleave iNewline (map pprSc prog)
+GH> pprProgram prog = iInterleave (iAppend (iStr " ;") iNewline) (map pprSc prog)
+GH> -- Isn't this what you meant?
+
+> pprSc (name, args, body)
+>   = iConcat [ iStr name, iSpace, pprArgs args,
+>               iStr " = ", iIndent (pprExpr body) ]
+
+M3> pprExpr :: coreExpr -> iseq
+GH3> pprExpr :: CoreExpr -> Iseq
+3> pprExpr (ENum n) = iNum n
+3> pprExpr (EVar v) = iStr v
+3> pprExpr (EAp (EAp (EVar "+") e1) e2)  = iConcat [pprAExpr e1, iStr " + ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "-") e1) e2)  = iConcat [pprAExpr e1, iStr " - ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "*") e1) e2)  = iConcat [pprAExpr e1, iStr " * ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "/") e1) e2)  = iConcat [pprAExpr e1, iStr " / ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "<") e1) e2)  = iConcat [pprAExpr e1, iStr " < ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "<=") e1) e2)  = iConcat [pprAExpr e1, iStr " <= ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "==") e1) e2)  = iConcat [pprAExpr e1, iStr " == ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "~=") e1) e2)  = iConcat [pprAExpr e1, iStr " ~= ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar ">=") e1) e2)  = iConcat [pprAExpr e1, iStr " >= ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar ">") e1) e2)  = iConcat [pprAExpr e1, iStr " > ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "&") e1) e2)  = iConcat [pprAExpr e1, iStr " & ", pprAExpr e2]
+3> pprExpr (EAp (EAp (EVar "|") e1) e2)  = iConcat [pprAExpr e1, iStr " | ", pprAExpr e2]
+3> pprExpr (EAp e1 e2) = iConcat [ pprExpr e1, iSpace, pprAExpr e2 ]
+
+3> pprExpr (ELet isrec defns expr)
+3>   = iConcat [  iStr keyword, iNewline,
+3>                iStr "  ", iIndent (pprDefns defns), iNewline,
+3>                iStr "in ", pprExpr expr ]
+3>     where
+M3>     keyword = "let",           ~isrec
+M3>             = "letrec",        isrec
+GH3>     keyword | not isrec = "let"
+GH3>             | isrec = "letrec"
+
+3> pprExpr (ECase e alts)
+3>   = iConcat [  iStr "case ", pprExpr e, iStr " of", iNewline,
+3>                iStr "  ", iIndent (iInterleave iNl (map pprAlt alts)) ]
+3>     where
+3>     iNl = iConcat [ iStr ";", iNewline ]
+3>
+3>     pprAlt (tag, args, rhs)
+3>       = iConcat [        iStr "<", iNum tag, iStr "> ",
+3>                          pprArgs args, iStr " -> ",
+3>                          iIndent (pprExpr rhs) ]
+
+3> pprExpr (ELam args body)
+3>   = iConcat [  iStr "(\\", pprArgs args, iStr ". ", iIndent (pprExpr body),
+3>                iStr ")"]
+
+3> pprArgs args = iInterleave iSpace (map iStr args)
+
+M2-> pprAExpr e = pprExpr e,                                isAtomicExpr e
+M2-> pprAExpr e = iConcat [iStr "(", pprExpr e, iStr ")"],  otherwise
+GH2-> pprAExpr e | isAtomicExpr e = pprExpr e
+GH2-> pprAExpr e | otherwise = iConcat [iStr "(", pprExpr e, iStr ")"]
+
+\end{solution}
+
+\subsection{Implementing @iseq@}
+
+\subsection{Layout and indentation}
+
+3> flatten col ((INewline, indent) : seqs)
+M3> = "\n" ++ (spaces indent) ++ (flatten indent seqs)
+GH3>   = '\n' : (space indent) ++ (flatten indent seqs)
+
+3> flatten col ((IIndent seq, indent) : seqs)
+3>   = flatten col ((seq, col) : seqs)
+
+3> flatten col ((IStr s, indent) : seqs)
+M3> = s ++ flatten (col + #s) seqs
+GH3>   = s ++ flatten (col + length s) seqs
+
+3> flatten col ((INil, indent) : seqs) = flatten col seqs
+
+3> flatten col ((IAppend seq1 seq2, indent) : seqs)
+3>   = flatten col ((seq1, indent) : (seq2, indent) : seqs)
+
+3> flatten col [] = ""
+
+\subsection{Operator precedence}
+
+\subsection{Other useful functions on @iseq@}
+
+> iSpace = iStr " "
+
+\section{A parser for the Core language}
+
+\subsection{Lexical analysis}
+
+This lexical analyser recognises comments from a double vertical
+bar to the end of the line, and recognises two-character operators.
+We begin with the same equations as before.
+
+M2-> clex (c:cs) = clex cs,        isWhiteSpace c
+GH2-> clex (c:cs) | isWhiteSpace c = clex cs
+
+M2-> clex (c:cs) = num_token : clex rest_cs,       digit c
+M2->              where
+M2->              num_token = c : takewhile digit cs
+M2->              rest_cs   = dropwhile digit cs
+GH2-> clex (c:cs) | isDigit c = num_token : clex rest_cs
+GH2->              where
+GH2->              num_token = c : takeWhile isDigit cs
+GH2->              rest_cs   = dropWhile isDigit cs
+
+M2-> clex (c:cs) = var_tok : clex rest_cs,         letter c
+M2->              where
+M2->              var_tok = c : takewhile isIdChar cs
+M2->              rest_cs = dropwhile isIdChar cs
+GH2-> clex (c:cs) | isAlpha c = var_tok : clex rest_cs
+GH2->              where
+GH2->              var_tok = c : takeWhile isIdChar cs
+GH2->              rest_cs = dropWhile isIdChar cs
+
+Now the extra equation for handling a comment:
+
+M2-> clex ('|':'|':cs) = clex (dropwhile (~= '\n') cs)
+GH2-> clex ('|':'|':cs) = clex (dropWhile (/= '\n') cs)
+
+And the equation for two-character operators:
+
+M2-> clex (c1:c2:cs) = [c1,c2] : clex cs,  member twoCharOps [c1,c2]
+GH2-> clex (c1:c2:cs) | ([c1, c2] `elem` twoCharOps) = [c1,c2] : clex cs
+
+The remaining two equations are unchanged.
+
+2-> clex (c:cs) = [c] : clex cs
+2-> clex [] = []
+
+\subsection{Syntax analysis}
+
+\subsection{Basic tools for parsing}
+
+\subsection{Sharpening the tools}
+
+\begin{solution}{ex:pThen}
+
+M> pThen3 :: (* -> ** -> *** -> ****)
+M>           -> parser * -> parser ** -> parser *** -> parser ****
+M> pThen3 combine p1 p2 p3 toks
+M> = [(combine v1 v2 v3, toks3) | (v1,toks1) <- p1 toks;
+M>                                (v2,toks2) <- p2 toks1;
+M>                                (v3,toks3) <- p3 toks2]
+GH> pThen3 :: (a -> b -> c -> d)
+GH>           -> Parser a -> Parser b -> Parser c -> Parser d
+GH> pThen3 combine p1 p2 p3 toks
+GH>   = [(combine v1 v2 v3, toks3) | (v1,toks1) <- p1 toks,
+GH>                                  (v2,toks2) <- p2 toks1,
+GH>                                  (v3,toks3) <- p3 toks2]
+
+M> pThen4 :: (* -> ** -> *** -> **** -> *****)
+M>           -> parser * -> parser ** -> parser ***
+M>           -> parser **** -> parser *****
+M> pThen4 combine p1 p2 p3 p4 toks
+M> = [(combine v1 v2 v3 v4, toks4) | (v1,toks1) <- p1 toks;
+M>                                   (v2,toks2) <- p2 toks1;
+M>                                   (v3,toks3) <- p3 toks2;
+M>                                   (v4,toks4) <- p4 toks3]
+GH> pThen4 :: (a -> b -> c -> d -> e)
+GH>           -> Parser a -> Parser b -> Parser c
+GH>           -> Parser d -> Parser e
+GH> pThen4 combine p1 p2 p3 p4 toks
+GH>   = [(combine v1 v2 v3 v4, toks4) | (v1,toks1) <- p1 toks,
+GH>                                     (v2,toks2) <- p2 toks1,
+GH>                                     (v3,toks3) <- p3 toks2,
+GH>                                     (v4,toks4) <- p4 toks3]
+
+\end{solution}
+
+\begin{solution}{ex:pEmpty}
+
+> pEmpty v toks = [(v, toks)]
+
+> pOneOrMore p = pThen (:) p (pZeroOrMore p)
+
+\end{solution}
+
+\begin{solution}{ex:pApply}
+
+> pApply p f toks = [(f v, toks') | (v, toks') <- p toks]
+
+\end{solution}
+\begin{solution}{ex:pSep}
+
+> pOneOrMoreWithSep p psep = pThen (:) p (pOneOrMoreWithSep_c p psep)
+>
+> pOneOrMoreWithSep_c p psep
+M>   = (pThen discard_sep psep (pOneOrMoreWithSep p psep)) $pAlt
+GH>   = (pThen discard_sep psep (pOneOrMoreWithSep p psep)) `pAlt`
+>     (pEmpty [])
+>     where
+>     discard_sep sep vs = vs
+
+\end{solution}
+\begin{solution}{ex:pSat}
+
+> pSat pred []         = []
+M> pSat pred (tok:toks) = [(tok,toks)],  pred tok
+M>                      = [],            otherwise
+GH> pSat pred (tok:toks) | pred tok = [(tok,toks)]
+GH>                      | otherwise = []
+
+\end{solution}
+\begin{solution}{ex:pVar}
+
+2-> pVar = pSat isVar
+2->        where
+M2->        isVar s = letter (hd s) & ~ member keywords s
+GH2->        isVar s = isAlpha (head s) && s `notElem` keywords
+
+\end{solution}
+\begin{solution}{ex:pNum}
+
+M> pNum = pSat (digit . hd) $pApply numval
+GH> pNum = pSat (isDigit . head) `pApply` numval
+
+GH> numval :: String -> Int
+GH> numval = foldll (\a c -> 10 * a + ord c - ord '0') 0
+
+\end{solution}
+
+\subsection{Parsing the Core language}
+
+> mk_sc sc args eq rhs = (sc, args, rhs)
+
+M> pExpr = pLet $pAlt pCase $pAlt pLambda $pAlt pExpr1
+GH> pExpr = pLet `pAlt` (pCase `pAlt` (pLambda `pAlt` pExpr1))
+
+> pLet = pThen4 mk_let
+M>               ((pLit "let") $pAlt (pLit "letrec")) pDefns
+GH>               ((pLit "let") `pAlt` (pLit "letrec")) pDefns
+>               (pLit "in") pExpr
+>        where
+M>        mk_let keyword defns in expr = ELet (keyword = "letrec") defns expr
+GH>        mk_let keyword defns in' expr = ELet (keyword == "letrec") defns expr
+>
+> pDefns = pOneOrMoreWithSep pDefn (pLit ";")
+> pDefn = pThen3 mk_defn pVar (pLit "=") pExpr
+>         where
+>         mk_defn var equals rhs = (var,rhs)
+
+> pCase = pThen4 mk_case (pLit "case") pExpr (pLit "of") pAlters
+>         where
+M>         mk_case case e of alts = ECase e alts
+GH>         mk_case case' e of' alts = ECase e alts
+>
+> pAlters = pOneOrMoreWithSep pAlter (pLit ";")
+> pAlter = pThen4 mk_alt pTag (pZeroOrMore pVar) (pLit "->") pExpr
+>          where
+>          mk_alt tag args arrow rhs = (tag, args, rhs)
+>
+> pTag = pThen3 get_tag (pLit "<") pNum (pLit ">")
+>        where
+>        get_tag lb tag rb = tag
+
+> pLambda = pThen4 mk_lam
+>               (pLit "\\") (pOneOrMore pVar) (pLit ".") pExpr
+>           where
+>           mk_lam lam vars dot expr = ELam vars expr
+
+
+> pExpr2 = pThen assembleOp pExpr3 pExpr2c
+M> pExpr2c = (pThen FoundOp (pLit "&") pExpr2) $pAlt (pEmpty NoOp)
+GH> pExpr2c = (pThen FoundOp (pLit "&") pExpr2) `pAlt` (pEmpty NoOp)
+
+> pExpr3 = pThen assembleOp pExpr4 pExpr3c
+M> pExpr3c = (pThen FoundOp pRelop pExpr4) $pAlt (pEmpty NoOp)
+GH> pExpr3c = (pThen FoundOp pRelop pExpr4) `pAlt` (pEmpty NoOp)
+
+M> pRelop = pSat (member relops)
+GH> pRelop = pSat (`elem` relops)
+>          where
+>          relops = ["<=", "<", ">=", ">", "==", "~="]
+
+> pExpr4 = pThen assembleOp pExpr5 pExpr4c
+M> pExpr4c = (pThen FoundOp (pLit "+") pExpr4) $pAlt
+M>           (pThen FoundOp (pLit "-") pExpr5) $pAlt
+M>           (pEmpty NoOp)
+GH> pExpr4c = (pThen FoundOp (pLit "+") pExpr4) `pAlt`
+GH>           ((pThen FoundOp (pLit "-") pExpr5) `pAlt`
+GH>            (pEmpty NoOp))
+
+> pExpr5 = pThen assembleOp pExpr6 pExpr5c
+M> pExpr5c = (pThen FoundOp (pLit "*") pExpr5) $pAlt
+M>           (pThen FoundOp (pLit "/") pExpr6) $pAlt
+M>           (pEmpty NoOp)
+GH> pExpr5c = (pThen FoundOp (pLit "*") pExpr5) `pAlt`
+GH>           ((pThen FoundOp (pLit "/") pExpr6) `pAlt`
+GH>            (pEmpty NoOp))
+
+M> pExpr6 = (pOneOrMore pAtomic) $pApply mk_ap_chain
+GH> pExpr6 = (pOneOrMore pAtomic) `pApply` mk_ap_chain
+>          where
+>          mk_ap_chain (fn:args) = foldll EAp fn args
+
+M> pAtomic = pConstr $pAlt
+M>           (pBracExpr $pAlt
+M>           ((pVar $pApply EVar) $pAlt
+M>           ((pNum $pApply ENum))))
+GH> pAtomic = pConstr `pAlt`
+GH>           (pBracExpr `pAlt`
+GH>           ((pVar `pApply` EVar) `pAlt`
+GH>           ((pNum `pApply` ENum))))
+
+The extra parens in the definitions of @pExpr4@, @pExpr5@ and @pAtomic@
+are there so that the compiler doesn't need to assume that @pAlt@ is associative.
+The parens make the grouping explicit.
+
+> pBracExpr = pThen3 mk_brack (pLit "(") pExpr (pLit ")")
+>             where
+>             mk_brack open expr close = expr
+
+> pConstr = pThen4 pick_constr (pLit "Pack") (pLit "{") pTagArity (pLit "}")
+>           where
+>           pick_constr cons lbrack constr rbrack = constr
+>           pTagArity = pThen3 mk_constr pNum (pLit ",") pNum
+>           mk_constr tag comma arity = EConstr tag arity
+
+
+

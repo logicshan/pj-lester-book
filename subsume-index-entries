@@ -1,0 +1,15 @@
+#!/usr/local/bin/perl
+#
+
+while (<>) {
+
+    $curLine = $_ ;
+    $key = $curLine ;
+    $key =~ s/\|underline//;
+
+    if ($seen{$key} ne "yes")  {
+		$seen{$key} = "yes" ;
+		print $curLine ;
+    }
+}
+

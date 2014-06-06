@@ -1,0 +1,68 @@
+% Information about getting the source files.
+% This is in a separate file because it is included in both the
+% main book and the installation guide
+
+You can get all the source code for this book,
+by network file transfer (FTP) from the
+several sites.  In each case, you need only get the file
+$$
+@pjlester-@n@.@m@.tar.Z@
+$$
+where $n@.@m$ is the current version number of the book. There is always
+only one such file, but the $n@.@m$ may vary as we correct errors and
+otherwise improve the material.  Once you have got the file, run the command
+$$
+@zcat pjlester-@n@.@m@.tar.Z | tar xf -@
+$$
+and then read or print the @README@ file, and the DVI file @installation.dvi@.
+If you don't have @zcat@, do the following instead:
+$$
+\begin{array}{l}
+@uncompress pjlester-@n@.@m@.tar.Z@ \\
+@tar xf pjlester-@n@.@m@.tar@
+\end{array}
+$$
+
+The sites where the sources are held are as follows.
+\begin{center}
+\begin{tabular}{|llll|}
+\hline
+Site	& Host name		  & Host address & Directory \\
+\hline
+Glasgow & @ftp.dcs.glasgow.ac.uk@ & 130.209.240.50 & @pub/pj-lester-book@\\
+Yale 	& @nebula.cs.yale.edu@    & 128.36.13.1 & @pub/pj-lester-book@	\\
+Chalmers& @animal.cs.chalmers.se@ & 129.16.2.27	& @pub/pj-lester-book@ \\
+\hline
+\end{tabular}
+\end{center}
+Log in as @anonymous@, and use your electronic mail address
+as password.
+Here is a sample Internet FTP session:
+\begin{verbatim}
+    % ftp nebula.cs.yale.edu
+    Connected to NEBULA.SYSTEMSZ.CS.YALE.EDU.
+    220 nebula FTP server (SunOS 4.0) ready.
+    Name (nebula.cs.yale.edu:guestftp): anonymous
+    331 Guest login ok, send ident as password.
+    Password: simonpj@dcs.glasgow.ac.uk
+    230 Guest login ok, access restrictions apply.
+    ftp> type binary
+    200 Type set to I.
+    ftp> cd pub/pj-lester-book
+    250 CWD command successful.
+    ftp> get pjlester-1.2.tar.Z
+    <messages about a successful transfer would come here>
+    ftp> bye
+\end{verbatim}
+Within the UK, you may get the above file from
+@uk.ac.glasgow.dcs@ by anonymous UK NIFTP 
+(binary mode; user: @guest@; password: your e-mail address);
+request:
+$$
+@<FP>/pj-lester-book/@filename
+$$
+A typical command you might use on at least some Unix machines is:
+\begin{verbatim}
+  cpf -b '<FP>/pj-lester-book/pjlester-1.2.tar.Z@uk.ac.glasgow.dcs' 
+	 pjlester-1.2.tar.Z
+\end{verbatim}

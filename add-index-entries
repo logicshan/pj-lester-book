@@ -1,0 +1,90 @@
+#!/usr/local/bin/perl
+#
+#	Add index entries for reference to Miranda stuff
+
+$pgm = $0;
+
+# 	Set up boolean values
+$false = 0;
+$true = 1;
+
+# 	State variables
+$curLineIsPgm = $false;		# This line has program code
+$prevLineWasPgm = $false;	# Previous line had program code
+$endOfBlock = $false;		# Previous line blank and the one before
+				# that was program
+$SavedIndexEntries = '';
+
+# 	Patterns
+$PgmLinePatt = "^(\\d|\\d-|\\d-\\d)?>";
+
+$IdPatt = "[A-Za-z][A-Za-z0-9()][A-Za-z0-9()]+";
+# Less than 3 chars is uninteresting
+# Include brackets for let(rec)
+
+$PackPatt = "Pack{[^,]+,[^}]+}";
+# Pack{t,a}
+
+$ConPatt = "[A-Z][A-Za-z0-9]*";
+
+$SchemePatt = "A|I|J|B|D|E|F|R|V|AL|SC|C|DR|AR|DE|Alt_E|DB|AB";
+
+while (<>) {
+
+    $curLine = $_;
+    $curLineIsPgm = /$PgmLinePatt/o;
+			# The o says it can compile the pattern...
+
+    if ($endOfBlock) {
+	# spit out any accum index entries
+
+	print $SavedIndexEntries;
+	if ($curLineIsPgm) { print "\n"; }
+
+	$SavedIndexEntries = '';
+
+    }
+
+    if ($curLine =~ /$PgmLinePatt(.*\n)/o) {
+	# Processing for program lines
+		$PgmLine = $2;
+		# $PgmLine now has everything after "arrow"
+
+		# Zap comments
+		$PgmLine =~ s/\|\|.*//;
+
+		# Function and variable defns
+		if ($PgmLine =~ /^ ($IdPatt) /o) {
+			# Matches "index this thing" criterion.
+			$SavedIndexEntries .= "\\indexDTT{$1}%\n";
+		}
+
+		# First constructor of an alg data type
+		if ($PgmLine =~ /::=\s*($ConPatt)/o) {
+			$SavedIndexEntries .= "\\indexDTT{$1}%\n";
+		}
+
+		# Subsequent constructors
+		while ($PgmLine =~ /\|\s*($ConPatt)(.*\n)/o) {
+			$SavedIndexEntries .= "\\indexDTT{$1}%\n";
+			$PgmLine = $2;
+		}
+
+    } else {
+
+		# Non program line, so just add inline index use
+		# entries for things in @@ quotes
+		$curLine =~ s/@($IdPatt)@/@\1@\\indexTT{\1}/go;
+		$curLine =~ s/@($PackPatt)@/@\1@\\indexTT{Pack}/go;
+
+		# Ditto for definition points of compilation schemes
+		$curLine =~ s/^\\($SchemePatt)\{/\\indexD{\$\\protect\\cal \\p\1\$}\\\1\{/o;
+	    }
+
+    $endOfBlock = $prevLineWasPgm && ($curLine =~ /^\s*$/);
+    $prevLineWasPgm = $curLineIsPgm;
+
+#print "eob $endOfBlock, plp $prevLineWasPgm \n";
+    print $curLine;
+}
+

@@ -1,0 +1,116 @@
+	Implementing functional languages
+	~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	Simon Peyton Jones and David Lester
+	Prentice Hall 1992
+
+Overview
+~~~~~~~~
+In the Spring of 1992 Prentice Hall will publish the above book.  This
+book gives a practical approach to understanding implementations of
+non-strict functional languages using lazy graph reduction.
+
+The main unusual feature of the book is that the text of each chapter
+is itself a directly-executable Miranda(TM) program, constituting a
+minimal but complete compiler and interpreter for a particular
+abstract machine.  The complete source code for the book is available in
+machine-readable form by network file transfer (FTP). [Details below.]
+A Tutor's Guide, containing solutions to the exercises, is also available
+from the authors. 
+
+A second feature is a substantial chapter on the Three Instruction
+Machine (TIM).  Most functional language implementors know something
+of TIM, and there have been quite a few research papers about variants
+of it, but I believe this is the first published unified treatment,
+covering arithmetic, data structures, let(rec) expressions and so on,
+in a single framework.
+
+Written to allow the reader to modify, extend and experiment with the
+implementations provided in the text, we hope that this book will help
+to make a course on functional-langauge implementation "come alive".
+
+The main topics covered are:
+
+	* A "core" language, including a parser and pretty printer.
+	* A template-instantiation implementation
+	* The G-machine
+	* The three instruction machine (TIM)
+	* A parallel G-machine
+	* Lambda lifting and full laziness
+	
+This book differs from Simon's earlier book on functional-language 
+implementations in the following ways
+
+	* it is intended as a course text;
+	* it has executable examples of everything discussed (including
+		a pointer-reversing garbage collector...);
+	* it has a substantial chapter on TIM, which was not covered
+		at all in the earlier book;
+	* the treatment of full laziness is new, based on
+		the ideas in our paper in Software P&E (May 1991)
+
+Release information
+~~~~~~~~~~~~~~~~~~~
+The patch level of this release is given in the Makefile
+
+The file Release-history tells the changes since the last release.
+
+What is here
+~~~~~~~~~~~~
+This directory contains material to allow you to build:
+ 
+	- the installation guide
+	- the book
+	- executable Miranda sources for the implementations described
+
+To get started, print the installation guide, which is in the DVI file
+
+	installation.dvi
+
+It should tell you how to do everything else.  If it doesn't exist, type
+
+	make installation.dvi
+
+Important 
+~~~~~~~~~ 
+These sources contain the complete source text for the book, both
+executable and typesettable, so you can print yourself a copy (about
+300 pages).  Needless to say, we'd won't get any of those lovely
+royalties if everyone uses their laser-printer rather than their
+bookshop; so please buy a copy too when it is in print!  And of
+course, please don't reproduce lots of copies.  Meanwhile, we're happy
+for you to print individual copies.
+
+The book should be published in the Spring of 1992.
+
+Tutor's guide
+~~~~~~~~~~~~~
+The solutions to the exercises are collected in a Tutor's Guide, which 
+isn't included (because then students would have access to the answers too).
+If you want the solutions, write to Simon on your departmental letterhead,
+including your email address, and he'll send you the stuff.
+
+Bugs
+~~~~
+It is quite possible that something won't go smoothly when you try to
+build the system as described in the installation guide.  Please let
+Simon know if you encounter any problems, and (preferably) how you solved
+them, so he can improve the installation guide.
+
+Likewise, the content of the book may well contain errors.  Please tell us
+if you find any.
+
+Mailing list
+~~~~~~~~~~~~
+We would like to have some idea of who is using this material.  If you
+have FTP'd the material to your site, please email Simon to say so.
+
+Using this information, we'll keep you informed about bug-fixes and
+improvements to the machine-readable sources.
+
+
+
+Have fun!
+
+
+Simon Peyton Jones	simonpj@dcs.glasgow.ac.uk
+David Lester		dlester@dcs.manchester.ac.uk

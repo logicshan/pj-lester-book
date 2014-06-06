@@ -1,0 +1,1389 @@
+% $Date: 91/11/18 07:13:42 $
+% $Revision: 1.7 $
+% (c) 1991 Simon Peyton Jones & David Lester.
+
+H> module ParGM where
+H> import Utils
+H> import Language
+H> --import GM
+
+\chapter{A Parallel G-machine\index{parallel G-Machine}}
+\label{sect:par-g-machine}
+
+\section{Introduction}
+
+In this chapter we develop an abstract machine and compiler for a
+parallel G-machine. It is based on a simplified version of the
+parallel G-machine developed as part of ESPRIT project 415; interested
+readers are referred to \cite{HDG-machine} for an easily accessible
+account.  A general introduction to parallel graph reduction can be
+found in \cite{PJ:CJoverview}.
+
+\subsection{Parallel functional programming\index{parallel functional
+programming}}
+
+Writing parallel imperative programs is hard. Amongst the reasons for
+this are the following:
+\begin{itemize}
+
+\item The programmer has to conceive of a {\em parallel
+algorithm\/}\index{parallel algorithm} which meets the specification of
+the problem.
+
+\item The algorithm must be translated into the programming language
+constructs provided by the language. This is likely to entail:
+identification of {\em concurrent tasks}\index{task!concurrent},
+defining the interfaces between tasks to allow them to {\em
+synchronise\/}\index{task!synchronization} and {\em
+communicate}\index{task!communication}. {\em Shared data\/}\index{shared memory}
+may need to be especially protected, to prevent more than one task
+accessing a variable at once.
+
+\item The programmer may be responsible for assigning tasks to
+processors, ensuring that tasks that need to communicate with one
+another are assigned to processors that are physically connected.
+
+\item Finally, in systems with no programmer control over the {\em
+scheduling policy}\index{scheduling!policy}, the programmer must prove
+that the collection of concurrent tasks will execute correctly under
+all possible {\em interleavings\/}\index{tasks!interleaving} of task
+operations.
+
+\end{itemize}
+
+In contrast, when programming in a functional language, only the first
+of these points applies. Consider the following (contrived) example
+program, $@psum@~n$, which calculates the sum of the numbers $1\ldots n$.
+\begin{verbatim}
+	psum n = dsum 1 n;
+	dsum lo hi = let mid = (lo+hi)/2 in
+		     if (hi==lo) hi ((dsum lo mid)+(dsum (mid+1) hi))
+\end{verbatim}
+The @dsum@ function works by dividing the problem into two, roughly
+equal, parts. It then combines the two results together to generate
+the answer.  This is a classic {\em divide-and-conquer
+algorithm}\index{divide-and-conquer algorithm}.
+
+Notice that neither of the functions @dsum@ or @psum@ includes any
+mention of parallel primitives in the language; so why is @psum@ a
+parallel algorithm? For comparison, we can write a sequential
+algorithm: @ssum@.
+\begin{verbatim}
+	ssum n = if (n==1) 1 (n + ssum (n-1))
+\end{verbatim}
+This function is a sequential algorithm because its {\em data
+dependencies\/}\index{data dependencies} are inherently
+sequential\index{inherant sequentiality}. In the @ssum@ example, what
+we mean by this is that the addition in @ssum n@ can only take place
+once @ssum (n-1)@ has been evaluated.  This in turn can only take
+place once we have evaluated @ssum (n-2)@, and so on. We may summarise
+this distinction as:
+\begin{important}
+A function implements a parallel algorithm whenever it permits the
+concurrent evaluation of two or more sub-expressions of its body.
+\end{important}
+
+As with any other programming language, a parallel algorithm is
+essential.  Notice, however, the contrasts with parallel imperative
+programming:
+\begin{itemize}
+
+\item No new language constructs are required to express parallelism,
+synchronisation or communication. The concurrency is implicit, and new
+tasks are created dynamically to be executed by the machine whenever
+it has spare capacity.
+
+\item No special measures are taken to protect data shared between
+concurrent tasks. For example, @mid@ is safely shared between the two
+concurrent tasks in @dsum@.
+
+\item We need no new proof techniques to reason about the parallel
+programs, as all of the techniques we use for sequentially executed
+functional programs still work. We also note that {\em
+deadlock\/}\index{deadlock} can only arise as a result of
+a self-dependency, such as
+\begin{verbatim}
+	letrec a = a+1 in a
+\end{verbatim}
+Expressions depending on their own value are meaningless, and their
+non-termination is the same behaviour as observed in the sequential
+implementation.
+
+\item The results of a program are determinate. It is not possible for
+the scheduling algorithm to cause answers to differ between two runs
+of the same program.
+
+\end{itemize}
+
+In summary, we suggest that these features allow us to
+express parallel algorithms conveniently,
+without having to solve a large number of
+low-level problems. Perhaps we can characterise this as:
+\begin{important}
+A parallel imperative program specifies in detail {\em
+resource allocation decisions\/}\index{resource-allocation decisions}
+which a parallel functional program does not even mention.
+\end{important}
+This means that the machine will have to be able to make resource
+allocation decisions automatically.  We will pay, with a loss of
+execution efficiency, whenever these decisions are not optimal.
+
+\subsubsection{Annotations}
+
+The high level of abstraction offered by functional languages places
+heavy demands on the compile-time and run-time resource allocators.
+Rather than leave {\em all\/} resource allocation decisions to the
+system, we will introduce an {\em annotation}\index{annotation, in
+parallel functional programs}, @par@, which initiates a new parallel
+thread. The annotation is a meaning-preserving decoration of the
+program text; in the case of @par@ it has the following syntax and
+meaning:
+\[
+  @par@~E_1~E_2 = E_1~E_2
+\]
+That is: @par@ is a synonym for application. Where it differs is that
+we intend that the expression $E_2$ should be evaluated by a
+concurrent task. As an example we will now rewrite the @dsum@ function
+using this annotation:
+\begin{verbatim}
+	dsum lo hi = let mid = (lo+hi)/2 in
+		     let add x y = x+y
+		     if (lo==hi) hi (par (add (dsum lo mid))
+					 (dsum (mid+1) hi))
+\end{verbatim}
+
+We see that @par@ causes the second argument to @+@ to be evaluated in
+parallel. The @par@ annotation can be inserted by the programmer or,
+in principle, by a clever compiler. Such cleverness is, however,
+beyond the scope of this book, so we will assume that the @par@s have
+already been inserted.
+
+\subsection{Parallel graph reduction\index{parallel graph reduction}}
+\label{pgm:ss:paraGR}
+
+We have seen in this book that graph reduction is a useful
+implementation technique for sequential machines; it will be no
+surprise that it is also suited to the implementation of parallel
+machines. In fact it has a number of benefits:
+\begin{itemize}
+
+\item There is no sequential concept of program counter; graph reduction
+is decentralised and distributed.
+
+\item Reductions may take place concurrently in many places in the
+graph, and the relative order in which they are scheduled cannot
+affect the result.
+
+\item All communication and synchronisation takes place via the
+graph.
+\end{itemize}
+
+\subsubsection{A parallel model}
+
+A {\em task\/}\index{task} is a sequential computation whose purpose is
+to reduce a particular sub-graph to WHNF. At any moment there may be
+many tasks that are able to run; this collection of sparked tasks is
+called the {\em spark pool}\index{spark pool}. A processor in search
+of work fetches a new task from the spark pool and executes it. A task
+can be thought of as a {\em virtual processor}\index{virtual
+processor}.
+
+Initially, there is only one task, whose job is to evaluate the whole
+program.  During its execution, it will hopefully create new tasks to
+evaluate expressions that the main task will later need. These are
+placed in the spark pool, so that another processor can pick up the
+task if it has run out of work. We call the act of placing a task into
+the spark pool {\em sparking\/}\index{sparking, of a child task} a child
+task.
+
+It is useful to consider the interaction between parent and child
+tasks. In the {evaluate-and-die model}\index{evaluate-and-die model of
+parallelism} of task management there is a lock bit on each graph
+node. When the bit is on, a task is executing which will evaluate the
+node; otherwise the bit is off. When a parent task requires the value
+of a sub-graph for which a task has been sparked, there are three
+cases to consider:
+\begin{itemize}
+\item the child task has not started yet,
+\item the child task has started, but not stopped yet, or
+\item the child task has completed.
+\end{itemize}
+In the first case, the parent task can evaluate the graph just as if
+the child task was not there. Of course this sets the lock bit, so
+that when an attempt is made to execute the child task it is
+immediately discarded. The interesting case is the second one, in
+which both parent and child are executing. When this is the situation,
+the parent task must wait for the child task to complete before
+proceeding. We say that the child task is {\em
+blocking\/}\index{blocking, of tasks} the parent task.  In the
+third case, the node is now in WHNF and unlocked, so the parent task
+will not take very long to fetch the value of the graph.
+
+The advantage of the evaluate-and-die model is that blocking only
+occurs when the parent and child actually collide. In all other cases,
+the parent's execution continues unhindered. Notice that the blocking
+mechanism is the {\em only\/} form of inter-task communication and
+synchronisation. Once a piece of graph has been evaluated to WHNF any
+number of tasks can simultaneously inspect it without contention.
+
+\subsubsection{An example\index{parallel G-machine!an example execution}}
+
+We begin with a sample execution of the simplest parallel program:
+\begin{verbatim}
+	main = par I (I 3)
+\end{verbatim}
+As we will shortly see, the two reductions of the identity function
+can take place in parallel.
+
+A good compiler will produce the following code for the @main@
+supercombinator\footnote{Your compiler might not produce this code if
+it is not sophisticated enough.}:
+\begin{verbatim}
+	e1 ++ par
+	where e1  = [Pushint 3, Pushglobal "I", Mkap, Push 0]
+	      par = [Par, Pushglobal "I", Mkap, Update 0, Pop 0, Unwind]
+\end{verbatim}
+Initially, there is only one task executing; it is constructing the
+sub-expression @(I 3)@. After executing the code sequence @e1@, the
+machine will be in the state shown in diagram (a) of
+Figure~\ref{pgm:fg:1ex1}.
+\begin{figure}
+\input{pgm_1x1}
+\caption{State after executing @e1@ code sequence and @Par@}\label{pgm:fg:1ex1}
+\end{figure}
+
+After executing @e1@ the machine encounters a @Par@ instruction. This
+causes it to create a new task to evaluate the node pointed to from
+the top of the stack. We will refer to the new task as @Task 2@; the
+original task will be labelled @Task 1@. This situation is illustrated
+in diagram (b) of Figure~\ref{pgm:fg:1ex1}.
+
+In diagram (c) (Figure~\ref{pgm:fg:1ex2}), we see @Task 1@
+continuing with its evaluation; it is performing a @Pushglobal I@
+instruction. The newly created task -- @Task 2@ -- starts with the
+code sequence: @[Unwind]@; it therefore starts to unwind the graph it
+has been assigned to evaluate. Diagram (d) shows @Task 1@
+completing the instantiation of the body of @main@, and @Task 2@
+completing its unwinding.
+\begin{figure}
+\input{pgm_1x2}
+\caption{State after @Task 1@ executes @[Pushglobal I, Mkap]@}
+\label{pgm:fg:1ex2}
+\end{figure}
+
+Its body instantiated, @Task 1@ overwrites the redex node, which is
+@main@. @Task 2@ performs a @Push 0@ instruction, this being the first
+instruction in the code for the @I@ supercombinator. This is shown in
+diagram (e) (Figure~\ref{pgm:fg:1ex3}). In diagram (f) we see @Task 1@
+commence unwinding its spine, whilst @Task 2@ performs its updating.
+\begin{figure}
+\input{pgm_1x3}
+\caption{State after @Task 1@ executes @[Update 0, Unwind]@}
+\label{pgm:fg:1ex3}
+\end{figure}
+
+In Figure~\ref{pgm:fg:1ex4}, we see @Task 2@ run to completion. The
+remainder of the execution of @Task 1@ is the same as the sequential
+G-machine, so we omit it.
+\begin{figure}
+\input{pgm_1x4}
+\caption{State after @Task 1@ executes @[Unwind, Unwind]@}
+\label{pgm:fg:1ex4}
+\end{figure}
+
+This concludes a brief overview of the parallel G-machine's execution
+with concurrent tasks. We now provide a minimal parallel G-machine.
+
+\section{Mark 1: A minimal parallel G-machine\index{parallel G-machine!Mark 1}}
+\label{minimal-pgm}
+
+The first machine we present can be based on any of the G-machines
+from Chapter~\ref{sect:g-machine}, except the Mark~1; we need this
+restriction to ensure that updating is done. To this basic machine we
+need to add the machinery for parallelism. We make the following basic
+assumptions.
+\begin{enumerate}
+\item There is a shared global graph, which all processors can access.
+\item There are an infinite number of processors. This means that
+there is always a processor available to execute a task.
+\item There is no locking of graph nodes. This means that it is
+possible that different tasks will re-evaluate the same expression.
+\end{enumerate}
+
+\subsection{Data type definitions}
+
+We will be making considerable use of state access functions in this
+chapter. Although they are not particularly interesting, for
+completeness they are included in this section.
+
+In a parallel machine the state @pgmState@ is split into two
+components: a global component, @pgmGlobalState@; and a local
+component, @pgmLocalState@. The @pgmLocalState@ contains the
+processors that will execute the program. The @pgmGlobalState@
+contains global data structures -- of which the heap is the most
+frequently used -- that are manipulated by the processors.
+
+M> pgmState == (pgmGlobalState,     || Current global state
+M>              [pgmLocalState])    || Current states of processors
+
+GH> type PgmState = (PgmGlobalState,    -- Current global state
+GH>              [PgmLocalState])    	-- Current states of processors
+
+
+\subsubsection{The global state component}
+
+To accommodate all of the possible machines you might use as a basis
+for your parallel implementation, the global state consists of five
+components: @gmOutput@, which is the output printed as the answer
+to the evaluation of the program; @gmHeap@, which is the heap;
+@gmGlobals@, which is used to point to the unique node in the heap for
+each supercombinator; @gmSparks@, which is the task pool and will
+be used to hold tasks before we begin to execute them; and @gmStats@,
+which is a global clock.
+
+M> pgmGlobalState == (gmOutput,          || output stream
+M>                    gmHeap,            || Heap of nodes
+M>                    gmGlobals,         || Global addresses in heap
+M>                    gmSparks,          || Sparked task pool
+M>                    gmStats)           || Statistics
+
+GH> type PgmGlobalState = (GmOutput,          -- output stream
+GH>                    GmHeap,            -- Heap of nodes
+GH>                    GmGlobals,         -- Global addresses in heap
+GH>                    GmSparks,          -- Sparked task pool
+GH>                    GmStats)           -- Statistics
+
+We consider each of these components in turn.
+
+\begin{itemize}
+
+\item The @gmOutput@ component was introduced in the Mark~6 G-machine
+(see Section~\ref{gm:ss:mark6}). It is used to accumulate the result of
+executing programs that can generate structured data, and is simply a string.
+
+M> gmOutput == [char]
+GH> type GmOutput = [Char]
+
+The function to get the @gmOutput@ from a @pgmState@ is @pgmGetOutput@ is:
+
+M> pgmGetOutput :: pgmState -> gmOutput
+GH> pgmGetOutput :: PgmState -> GmOutput
+> pgmGetOutput ((o, heap, globals, sparks, stats), locals) = o
+
+\item The heap data structure is the same as we used for the
+sequential G-machine.
+
+M> gmHeap == heap node
+GH> type GmHeap = Heap Node
+
+To get the heap from a @pgmState@ we use @pgmGetHeap@.
+
+M> pgmGetHeap :: pgmState -> gmHeap
+GH> pgmGetHeap :: PgmState -> GmHeap
+> pgmGetHeap ((o, heap, globals, sparks, stats), locals) = heap
+
+\item The addresses of global nodes in the heap are stored in
+@gmGlobals@; this too is the same structure we used in the sequential
+G-machine.
+
+M> gmGlobals == assoc name addr
+GH> type GmGlobals = ASSOC Name Addr
+
+Obtaining the @gmGlobals@ from a @pgmState@ is performed using the
+@pgmGetGlobals@ function.
+
+M> pgmGetGlobals :: pgmState -> gmGlobals
+GH> pgmGetGlobals :: PgmState -> GmGlobals
+> pgmGetGlobals ((o, heap, globals, sparks, stats), locals) = globals
+
+\item The spark pool is represented by the @gmSparks@ component. It
+holds the addresses of nodes in the graph which have been marked by
+the @par@ annotation as needing to be evaluated concurrently.
+
+M1-3> gmSparks == [addr]
+GH1-3> type GmSparks = [Addr]
+
+Access to this component is achieved by using the function
+@pgmGetSparks@.
+
+M> pgmGetSparks :: pgmState -> gmSparks
+GH> pgmGetSparks :: PgmState -> GmSparks
+> pgmGetSparks ((o, heap, globals, sparks, stats), locals) = sparks
+
+\item Finally, in the parallel G-machine we will hold the accumulated
+statistics in the global component. It is represented as a list of
+numbers; these detail how long each task in the machine ran for,
+before it completed.
+
+M> gmStats == [num]
+GH> type GmStats = [Int]
+
+Access to this component is accomplished using @pgmGetStats@.
+
+M> pgmGetStats :: pgmState -> gmStats
+GH> pgmGetStats :: PgmState -> GmStats
+> pgmGetStats ((o, heap, globals, sparks, stats), locals) = stats
+
+\end{itemize}
+
+\subsubsection{The local state component}
+
+The local component of the parallel G-machine consists of a list of
+processors; a processor is represented as a task. Again, to make the
+parallel machine capable of executing with any G-machine as its basis,
+we make the state of each processor a 5-tuple:
+
+M1-4> pgmLocalState == (gmCode,        || Instruction stream
+M1-4>                   gmStack,       || Pointer stack
+M1-4>                   gmDump,        || Stack of dump items
+M1-4>                   gmVStack,      || Value stack
+M1-4>                   gmClock)       || Number of ticks the task
+M1-4>                                  ||          has been active
+
+GH1-4> type PgmLocalState = (GmCode,    -- Instruction stream
+GH1-4>                   GmStack,       -- Pointer stack
+GH1-4>                   GmDump,        -- Stack of dump items
+GH1-4>                   GmVStack,      -- Value stack
+GH1-4>                   GmClock)       -- Number of ticks the task
+GH1-4>                                  --          has been active
+
+We now consider each component in turn.
+
+\begin{itemize}
+\item The code sequence is simply a list of instructions.
+
+M> gmCode == [instruction]
+GH> type GmCode = [Instruction]
+
+\item As in the sequential G-machine, the stack is a list of addresses
+in heap.
+
+M> gmStack == [addr]
+GH> type GmStack = [Addr]
+
+\item If you are using a Mark~4 G-machine (or any later mark) as a
+basis for your parallel implementation, then a dump is needed. This is
+used as a stack of dump items\index{dump items}, each of type
+@gmDumpItem@.
+
+M1-4> gmDump     == [gmDumpItem]
+M1-4> gmDumpItem == (gmCode, gmStack)
+GH1-4> type GmDump     = [GmDumpItem]
+GH1-4> type GmDumpItem = (GmCode, GmStack)
+
+\item If you have used the Mark~7 G-machine as the basis of your
+implementation you will need a V-stack for each processor.
+
+M> gmVStack == [num]
+GH> type GmVStack = [Int]
+
+
+\item We also provide each processor with a clock. This records how
+many instructions the task has executed:
+
+M> gmClock == num
+GH> type GmClock = Int
+
+\end{itemize}
+
+\subsubsection{State access functions}
+
+Although we have already defined some state access functions for the
+parallel machine, we will find it convenient to define a few more.
+Each processor will make one state transition, during
+which it behaves as if it were a sequential machine.  If we make the
+state @gmState@ a pair consisting of the global component of the
+current machine state and a single processor state, then we have a
+superset of the state components of any of the sequential G-machines.
+
+M> gmState == (pgmGlobalState, pgmLocalState)
+GH> type GmState = (PgmGlobalState, PgmLocalState)
+
+\par
+It follows that we can simply redefine the state access functions we
+used in the sequential machine to work with the new type of state.
+Here are the type signatures of the global @put@ functions:
+
+M> putOutput :: gmOutput -> gmState -> gmState
+M> putHeap :: gmHeap   -> gmState -> gmState
+M> putSparks :: gmSparks -> gmState -> gmState
+M> putStats :: gmStats  -> gmState -> gmState
+
+GH> putOutput :: GmOutput -> GmState -> GmState
+GH> putHeap :: GmHeap   -> GmState -> GmState
+GH> putSparks :: GmSparks -> GmState -> GmState
+GH> putStats :: GmStats  -> GmState -> GmState
+
+\par
+The corresponding @get@ functions have type-signatures:
+
+M> getOutput :: gmState  -> gmOutput
+M> getHeap :: gmState  -> gmHeap
+M> getGlobals :: gmState  -> gmGlobals
+M> getSparks :: gmState  -> gmSparks
+M> getStats :: gmState  -> gmStats
+
+GH> getOutput :: GmState  -> GmOutput
+GH> getHeap :: GmState  -> GmHeap
+GH> getGlobals :: GmState  -> GmGlobals
+GH> getSparks :: GmState  -> GmSparks
+GH> getStats :: GmState  -> GmStats
+
+\par
+For access to the components local to a processor we need @put@ functions
+with the following type-signatures:
+
+M> putCode :: gmCode   -> gmState -> gmState
+M> putStack :: gmStack  -> gmState -> gmState
+M> putDump :: gmDump   -> gmState -> gmState
+M> putVStack :: gmVStack -> gmState -> gmState
+M> putClock :: gmClock  -> gmState -> gmState
+
+GH> putCode :: GmCode   -> GmState -> GmState
+GH> putStack :: GmStack  -> GmState -> GmState
+GH> putDump :: GmDump   -> GmState -> GmState
+GH> putVStack :: GmVStack -> GmState -> GmState
+GH> putClock :: GmClock  -> GmState -> GmState
+
+\par
+The @get@ functions have types:
+
+M> getCode :: gmState  -> gmCode
+M> getStack :: gmState  -> gmStack
+M> getDump :: gmState  -> gmDump
+M> getVStack :: gmState  -> gmVStack
+M> getClock :: gmState  -> gmClock
+
+GH> getCode :: GmState  -> GmCode
+GH> getStack :: GmState  -> GmStack
+GH> getDump :: GmState  -> GmDump
+GH> getVStack :: GmState  -> GmVStack
+GH> getClock :: GmState  -> GmClock
+
+\begin{exercise}\label{pgm:X:access}
+Write the access functions with the types given above.
+\end{exercise}
+
+GOT HERE ZZZZ KH
+
+\par\subsection{The evaluator}
+
+The structure of the evaluator @eval@ will be familiar; it is the
+similar to the one used in the G-machine.
+
+M> eval :: pgmState -> [pgmState]
+GH> eval :: PgmState -> [PgmState]
+> eval state = state: restStates
+>              where
+M>              restStates = [],                           gmFinal state
+M>                         = eval (doAdmin (steps state)), otherwise
+GH>              restStates | gmFinal state  = []
+GH>                         | otherwise = eval (doAdmin (steps state))
+
+The difference is that we call @steps@ instead of @step@.  The @steps@
+function must run down the list of processors doing a single step on
+each. The precise sequence of events is:
+\begin{enumerate}
+
+\item First we extract the addresses that were sparked in the previous
+call to @steps@, from the state.
+
+\item Next, we turn them into processes. This is labelled @newtasks@.
+
+\item The spark pool component of the state is set to empty.
+
+\item We increment the clock for each processor that is about to
+execute.
+
+\item Finally, we use @mapAccuml@ to perform a sequence of @step@
+transitions, one for each processor.
+
+\end{enumerate}
+
+M1-2> steps :: pgmState -> pgmState
+GH1-2> steps :: PgmState -> PgmState
+1-2> steps state
+1-2>  = mapAccuml step global' local'
+1-2>    where ((out, heap, globals, sparks, stats), local) = state
+1-2>          newtasks = [makeTask a | a <- sparks]
+1-2>          global'  = (out, heap, globals, [], stats)
+1-2>          local'   = map tick (local ++ newtasks)
+
+\par
+To create a task to evaluate a node at address @addr@ you must define
+a @makeTask@ function. For machines based on G-machines 2~or~3 this
+will be:
+
+M> makeTask :: addr -> pgmLocalState
+GH> makeTask :: Addr -> PgmLocalState
+0> makeTask addr = ([Unwind], [addr], [], [], 0)
+
+For later marks of the G-machine we use:
+
+0> makeTask addr = ([Eval], [addr], [], [], 0)
+
+Incrementing the clock component of a processor is accomplished using
+@tick@.
+
+> tick (i, stack, dump, vstack, clock) = (i, stack, dump, vstack, clock+1)
+
+\par
+The machine has terminated when there are no more sparks in the spark pool,
+and there are no more processors executing tasks.
+
+M> gmFinal :: pgmState -> bool
+M> gmFinal s = second s = [] & pgmGetSparks s = []
+
+GH> gmFinal :: PgmState -> Bool
+GH> gmFinal s = second s == [] && pgmGetSparks s == []
+
+We use the @step@ function to perform a single step on a processor.
+
+M> step :: pgmGlobalState -> pgmLocalState -> gmState
+GH> step :: PgmGlobalState -> PgmLocalState -> GmState
+> step global local = dispatch i (putCode is state)
+>                     where (i:is) = getCode state
+>                           state = (global, local)
+
+\par
+The @doAdmin@ function eliminates processors that have finished
+executing.  A processor has finished when the code component is empty.
+When this is the case, we must update the statistics component of the
+state, with the number of instructions it took the processor to
+complete its task.
+
+M> doAdmin :: pgmState -> pgmState
+GH> doAdmin :: PgmState -> PgmState
+1-3> doAdmin ((out, heap, globals, sparks, stats), local)
+1-3>  = ((out, heap, globals, sparks, stats'), local')
+1-3>    where (local', stats') = foldr filter ([], stats) local
+1-3>          filter (i, stack, dump, vstack, clock) (local, stats)
+M1-3>          = (local, clock:stats),                            i = []
+M1-3>          = ((i, stack, dump, vstack, clock): local, stats), otherwise
+GH1-3>           | i == [] = (local, clock:stats)
+GH1-3>           | otherwise = ((i, stack, dump, vstack, clock): local, stats)
+
+We now consider the new instruction transitions.
+
+\subsubsection{The transition for the @Par@ instruction}
+
+The only new instruction that must be added is @Par@. Its
+effect is to mark the node at the top of the stack so that the machine
+may create a task to evaluate the node to WHNF. To do this, the
+instruction must modify the global component of the state by adding
+the address of the node to the spark pool.
+
+\pgmrule%
+{\pgmstate{h}{m}{t}{@Par@:i}{a:s}}%
+{\pgmstate{h}{m}{a:t}{i}{s}}
+
+The first tuple -- consisting of $h$, $m$ and $t$ -- is the global
+state component, with $h$, $m$ and $t$ being the heap, global address
+map and spark pool respectively. The second tuple -- consisting of an
+instruction stream and a stack -- is a particular task's local state;
+depending on the version of the G-machine you have used as a basis you
+may need to add other components to the local state.
+
+The effect of @Par@ is to add the address $a$ to the spark pool. It is
+implemented as follows:
+
+M> par :: gmState -> gmState
+GH> par :: GmState -> GmState
+1-3> par s = s
+
+\begin{exercise}\label{pgm:X:par1}
+Modify @showInstruction@, @dispatch@ and @instruction@ so that
+@Par@ is correctly handled.
+\end{exercise}
+
+\subsection{Compiling a program}
+
+A simple compiler can be constructed for a parallel machine based on
+any of the sequential machines (except the Mark~7), by providing a
+compiled primitive for the @par@ function. More extensive
+modifications are required for the Mark~7 based machines.
+
+The other modification required lies in the @compile@ function, where
+the various components are now to be found in different locations, and
+of course there are now a number of processors. The new definition is:
+
+M> compile :: coreProgram -> pgmState
+GH> compile :: CoreProgram -> PgmState
+> compile program
+>  = (([], heap, globals, [], []), [initialTask addr])
+>    where (heap, globals) = buildInitialHeap program
+>          addr            = aLookup globals "main" (error "main undefined")
+
+This sets the global component to hold the heap and global map, as
+used in the sequential G-machine. We also place a task in the local
+component, to initiate the execution.
+
+M> initialTask :: addr -> pgmLocalState
+GH> initialTask :: Addr -> PgmLocalState
+> initialTask addr = (initialCode, [addr], [], [], 0)
+
+\par
+If you use the Mark~2 or Mark~3 sequential G-machine as a basis you need to
+define @initialCode@ as:
+
+M> initialCode :: gmCode
+GH> initialCode :: GmCode
+0> initialCode = [Unwind]
+
+For the Mark~4 or Mar~5 machine this is changed to:
+
+0> initialCode = [Eval]
+
+And, to deal with data structures, the Mark~6 and Mark~7 machine has the
+following @initialCode@:
+
+0> initialCode = [Eval, Print]
+
+\par
+We now consider how to add @par@ to the primitive functions of the
+machine. We begin by considering those machines based on sequential
+G-machines Marks 2 through to 6.
+
+\subsubsection{Using the Marks 2--6 G-machine as a basis}
+
+We need to include the following in the definition of @compiledPrimitives@:
+
+0> ("par", 2, [Push 1, Push 1, Mkap, Push 2, Par, Update 2, Pop 2, Unwind])
+
+This rather cryptic piece of code performs the following task when the
+function @par@ is applied to the two arguments: $E_1$ and $E_2$.
+\begin{enumerate}
+\item First we construct the application of $E_1$ to $E_2$; this is
+the job of the sequence:
+\begin{verbatim}
+	[Push 1, Push 1, Mkap]
+\end{verbatim}
+
+\item Next, @Push 2@ makes a copy of the pointer to $E_2$. The @Par@
+instruction then adds this address to the spark pool.
+
+\item Finally, we perform the usual updating and tidying-up after an
+instantiation.
+
+\end{enumerate}
+
+\subsubsection{Using the Mark~7 G-machine as a basis}
+
+As mentioned above, this is a slightly trickier operation. We need to
+modify the compiler functions @compileR@ and @compileE@ to recognise
+the special cases involving @par@. First @compileR@ needs the
+following case added:
+
+0> compileR (EAp (EAp (EVar "par") e1) e2) args
+0>  = compileC e2 args ++ [Push 0, Par] ++
+0>    compileC e1 (argOffset 1 args) ++ [Mkap, Update n, Pop n, Unwind]
+0>    where n = #args
+
+This uses the \tC{} scheme to compile @e2@, which is then sparked. The
+expression @e1@ is compiled using the \tC{} scheme, before we make the
+application node. Finally, we perform the updating and tidying-up of
+the stack.
+
+Next, we modify @compileE@ so that it has a case:
+
+0> compileE (EAp (EAp (EVar "par") e1) e2) args
+0>  = compileC e2 args ++ [Push 0, Par] ++
+0>    compileC e1 (argOffset 1 args) ++ [Mkap, Eval]
+
+This only differs from the case given for @compileR@ because it uses
+@Eval@ to force the application node that is created to WHNF.
+
+With these two modifications to the compiler, it suffices to add the
+following to the @primitives@:
+
+0>  ("par", ["x","y"], (EAp (EAp (EVar "par") (EVar "x")) (EVar "y")))
+
+Notice that we could use this approach with the Mark~5 or Mark~6 based
+machines.
+
+\begin{exercise}\label{pgm:X:primitives1}
+Make the modifications to your compiler, so that there is a @par@
+function defined.
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:primitives1comp}
+Why do we perform the sparking of the graph for the second argument
+before constructing the first argument in the special cases for
+
+@compileR@ and @compileE@?
+\end{exercise}
+
+\subsection{Printing the results}
+
+Once we have computed the states of the machine we control the display
+of them by using @showResults@. This prints out: the code for the
+supercombinators, the state transitions and the statistics. It has
+type:
+
+M> showResults :: [pgmState] -> [char]
+GH> showResults :: [PgmState] -> [Char]
+
+\par
+To print the supercombinator code we use the same @showSC@ functions as
+that for the G-machine; it has type:
+
+M> showSC :: pgmState -> (name, addr) -> iseq
+GH> showSC :: PgmState -> (Name, Addr) -> Iseq
+
+\par
+The function @showState@ is used to display the state of local processes
+during the transitions. Because we have a parallel machine there is now
+likely to be more than one task executing at once. It has type:
+
+M> showState :: pgmState -> iseq
+GH> showState :: PgmState -> Iseq
+
+\par
+Two other functions need to be modified: @showStats@ and
+@showOutput@. They have types:
+
+M> showStats :: pgmState -> iseq
+M> showOutput :: gmOutput -> iseq
+GH> showStats :: PgmState -> Iseq
+GH> showOutput :: GmOutput -> Iseq
+
+\begin{exercise}\label{pgm:X:show1}
+Modify the functions: @showResults@, @showSC@, @showState@, @showStats@ and
+@showOutput@.
+
+Define a new display function @showSparks@ with type:
+
+M> showSparks :: gmSparks -> iseq
+GH> showSparks :: GmSparks -> Iseq
+
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:trivial}
+Try running the parallel G-machine on the following program.
+\begin{verbatim}
+main = par (S K K) (S K K 3)
+\end{verbatim}
+How long does it take in machine cycles? How long does it take for the
+equivalent sequential program:
+\begin{verbatim}
+main = S K K (S K K 3)
+\end{verbatim}
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:trivial1:1}
+What happens when we run the program:
+\begin{verbatim}
+main = par I (I 3)
+\end{verbatim}
+Is the use of @par@ justified in this program?
+\end{exercise}
+
+\section{Mark~2: The evaluate-and-die model\index{parallel G-machine!Mark 2}}
+\label{pgm:mark2}
+
+A problem with the Mark~1 machine is that it risks creating many tasks
+to reduce the same node in the heap, thereby duplicating the work done
+by the machine. The way to prevent this is to {\em
+lock\/}\index{locking, of node} the nodes during unwinding. This will
+{\em block\/}\index{blocking, of tasks} any other task that encounters
+the same node. We must also remember to {\em unlock\/}\index{unlocking,
+of node} nodes once they become free again; this allows blocked tasks
+to resume.
+
+The only instruction that causes an unlocked node to become locked is
+@Unwind@; it does this to each node on the spine that it encounters.
+The reason we choose this instruction, rather than @Eval@, is that it
+is possible to encounter a locked node part way through unlocking a
+spine; using @Eval@ we would not catch this case.  Similarly, the only
+instruction that will block a task is @Unwind@.  After all, it is the
+only instruction that needs to inspect a node's value.
+
+Conversely, the only instruction that will unlock a locked node is
+@Update@. A previously locked node is unlocked when it is known to be
+in WHNF. But we know that {\em all\/} nodes in the spine below the redex
+are in WHNF, when we are about to update the redex, and hence we
+should unlock all nodes below the root of the redex.
+
+\subsection{The node data structure}
+\label{pgm:ss:mark2mc}
+
+The improvements we intend to incorporate require very few changes
+to be made to the machine's data structures. First, we must add two sorts of
+new nodes to the node data type: these will be @NLAp@, the locked
+application nodes; and @NLGlobal@, locked supercombinator nodes. We
+will see how they are used in the section on the new instruction
+transitions.
+
+M2-3> node ::= NNum num               || Numbers
+M2-3>          | NAp  addr addr       || Applications
+M2-3>          | NGlobal num gmCode   || Globals
+M2-3>          | NInd addr            || Indirections
+M2-3>          | NConstr num [addr]   || Constructors
+M2-3>          | NLAp addr addr       || Locked applications
+M2-3>          | NLGlobal num gmCode  || Locked globals
+
+GH2-3> data Node = NNum Int            -- Numbers
+GH2-3>          | NAp  Addr Addr       -- Applications
+GH2-3>          | NGlobal Int GmCode   -- Globals
+GH2-3>          | NInd Addr            -- Indirections
+GH2-3>          | NConstr Int [Addr]   -- Constructors
+GH2-3>          | NLAp Addr Addr       -- Locked applications
+GH2-3>          | NLGlobal Int GmCode  -- Locked globals
+
+\begin{exercise}\label{pgm:X:2nodeprint}
+Rewrite the @showNode@ function to deal with the new locked nodes.
+\end{exercise}
+
+\subsection{The instruction set}
+
+The only change that needs to be made is to lock and unlock nodes at
+the right places. We must lock application nodes and supercombinators
+with zero arguments as we unwind them. When a node is updated all of
+the nodes in the spine below it must be unlocked.
+We use two functions to perform locking and unlocking of heap nodes.
+The @lock@ function turns an unlocked, but possibly updatable, node
+into a locked one. The nodes that need to be locked are application
+nodes, and global nodes with no arguments.
+
+M2-3> lock :: addr -> gmState -> gmState
+GH2-3> lock :: Addr -> GmState -> GmState
+2-3> lock addr state
+2-3>  = putHeap (newHeap (hLookup heap addr)) state
+2-3>    where
+2-3>    heap = getHeap state
+2-3>    newHeap (NAp a1 a2)   = hUpdate heap addr (NLAp a1 a2)
+M2-3>    newHeap (NGlobal n c) = hUpdate heap addr (NLGlobal n c), n = 0
+M2-3>                          = heap,                             otherwise
+GH2-3>    newHeap (NGlobal n c) | n == 0 = hUpdate heap addr (NLGlobal n c)
+GH2-3>                          | otherwise = heap
+
+\par
+When we @unlock@ a locked application node we need to ensure that the
+spine that it points to is also unlocked; @unlock@ is therefore recursive.
+
+M2-3> unlock :: addr -> gmState -> gmState
+GH2-3> unlock :: Addr -> GmState -> GmState
+2-3> unlock addr state
+2-3>  = newState (hLookup heap addr)
+2-3>    where
+2-3>    heap = getHeap state
+2-3>    newState (NLAp a1 a2)
+2-3>      = unlock a1 (putHeap (hUpdate heap addr (NAp a1 a2)) state)
+2-3>    newState (NLGlobal n c)
+2-3>      = putHeap (hUpdate heap addr (NGlobal n c)) state
+2-3>    newState n = state
+
+\par
+The new step transitions for @Unwind@ and @Update@ should be defined
+in terms of @lock@ and @unlock@; these transitions are now defined. In
+the Rule~\ref{pgm:rule:2unwind}, we see that apart from locking the
+application node -- which is represented by @*NAp@ -- @Unwind@ has the
+same transition as it did in the Mark~1 machine.
+
+\pgmrule%
+{\pgmstate{h[a: @NAp@\  a_1\  a_2]}{m}{t}{[@Unwind@]}{a:s}}%
+{\pgmstate{h[a: @*NAp@\  a_1\  a_2]}{m}{t}{[@Unwind@]}{a_1:a:s}}
+\label{pgm:rule:2unwind}
+The same is also true of the transition rule for @Unwind@ when it has
+a supercombinator of arity zero on top of the stack. In this case
+@*NGlobal@ is a locked global node.
+
+\pgmrule%
+{\pgmstate{h[a: @NGlobal@\ 0\ c]}{m}{t}{[@Unwind@]}{a:s}}%
+{\pgmstate{h[a: @*NGlobal@\ 0\ c]}{m}{t}{c}{a:s}}
+
+In the new transition rule for @Update@, when we update the root of
+the redex, whose address is $a$, we must unlock all of the nodes in the
+spine descending from $a$. The transition rule is therefore:
+
+\pgmrule%
+{\pgmstate{h\left[\begin{array}{lll}
+a_1' & : & @NGlobal@\ n\  c\\
+a_2' & : & @*NAp@\ a_1'\ a_1\\
+\multicolumn{3}{c}{\cdots}\\
+a_{n-1}' & : & @*NAp@\ a_{n-2}'\ a_{n-2}\\
+a_n & : & @*NAp@\ a_{n-1}'\ a_{n-1}
+\end{array}\right]}{m}{t}{@Update@\ n:i}{a:a_1:\ldots:a_n:s}}%
+{\pgmstate{h\left[\begin{array}{lll}
+a_1' & : & @NGlobal@\ n\  c\\
+a_2' & : & @NAp@\ a_1'\ a_1\\
+\multicolumn{3}{c}{\cdots}\\
+a_{n-1}' & : & @NAp@\ a_{n-2}'\ a_{n-2}\\
+a_n & : & @NInd@\ a
+\end{array}\right]}{m}{t}{i}{a_1:\ldots:a_n:s}}
+
+\begin{exercise}\label{pgm:X:instructions2}
+Modify the definitions of the transition functions @unwind@ and
+@update@. You should use the @lock@ and @unlock@ functions in your
+code.
+
+You will also need to `look through' locked nodes on rearranging the
+stack, so @getArg@ becomes:
+
+2-3> getArg (NLAp a1 a2) = a2
+
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:run2}
+Try running this program on your machine:
+\begin{verbatim}
+main = twice' (twice' (twice' (S K K))) 3
+twice' f x = par f (f x)
+\end{verbatim}
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:phys-limit}\index{limits to parallelism!physical}
+A divide-and-conquer program executes a @par@ instruction in each
+running process every thirty instructions. The processes do not die.
+How many simulated clock ticks pass before we have one task for
+each electron in the universe? (Hint: there are approximately $10^{85}$
+electrons in the universe.)
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:econ-limit}\index{limits to parallelism!economic}
+If a processor costs \pounds 0.01, how long can the program of
+Exercise~\ref{pgm:X:phys-limit} run before nobody can
+afford the machine? (Hint: the US federal budget is approximately
+\pounds $5\times10^{12}$.)
+\end{exercise}
+
+\section{Mark~3: A realistic parallel G-machine\index{parallel G-machine}}
+\label{pgm:sc:mark3}
+
+As Exercises \ref{pgm:X:phys-limit}~and~\ref{pgm:X:econ-limit} will
+have shown there are physical and economic limitations to the amount
+of parallelism available in the real world\index{limits to
+parallelism}. The model of parallelism that we are using is not very
+realistic. We are creating a new processor to execute each parallel
+task, and in the real world we will very quickly run out of resources.
+
+\subsection{Scheduling policy\index{scheduling!policy}}
+
+A more realistic model must involve restricting the amount of
+parallelism to that provided by the hardware. This is easily
+accomplished by placing an upper limit on the number of processors
+that can run at any one time. As a consequence, whenever there are no
+processors available to execute a task, the task will remain unchanged.
+
+When there are more processors than tasks, some processors will be
+idle. On the other hand, when the reverse is the case, we will be
+faced with the problem of deciding which task we will execute next.
+This decision is called a {\em scheduling policy}\index{scheduling
+policy}.
+
+\subsection{Conservative and speculative parallelism\index{conservative parallelism}\index{speculative parallelism}}
+
+Some tasks will be more important than others. We can usefully
+classify tasks into one of two groups:
+\begin{itemize}
+\item tasks whose results will {\em definitely\/} be needed; and
+\item tasks whose results {\em may\/} be needed.
+\end{itemize}
+We refer to tasks in the first category as {\em conservative
+tasks}\index{conservative parallelism}, whilst those in the second are
+termed {\em speculative tasks}\index{speculative parallelism}.
+
+If we choose to allow speculative parallel tasks, then we must address
+issues of {\em priority\/}\index{scheduling!priority, of tasks} in scheduling
+tasks. That is: we must rank the tasks in order of importance. We
+must also allow different tasks with the same priority the same amount
+of computing time. To see why this is desirable, consider evaluating
+two branches of a case expression -- @e1@ and @e2@ -- in parallel with
+the evaluation of the discriminant expression @e0@.
+\begin{verbatim}
+	case e0 of
+	     <1> -> e1
+	     <2> -> e2
+\end{verbatim}
+Until @e0@ has completed its evaluation, we do not know which of @e1@
+or @e2@ will be required; it therefore makes sense to try to evaluate
+an equal amount of each. This sort of scheduling policy is termed
+{\em fair scheduling}\index{fair scheduling, of tasks}.
+Notice, in this example, that once @e0@ {\em has\/} completed, one of
+the tasks (@e1@ or @e2@) will become needed, and the other should be
+killed. The priorities of a task therefore need to be adjusted during
+the execution of a task.
+
+In this book we make no attempt to implement a machine suitable for
+speculative parallelism. We make the excuse that this is a `hard
+problem', and leave the matter alone. Henceforth, all uses of the
+@par@ primitive are assumed to occur in situations which give rise only to
+conservative parallelism.
+
+In the Mark~3 parallel G-machine, we will only have a limited number
+of active tasks within the machine. These are executed by the {\em
+processors\/}\index{processors} in the machine. There will be only a
+fixed number of processors. This fixed number is: @machineSize@, which
+we have currently set to @4@.
+
+M3-> machineSize :: num
+GH3-> machineSize :: Int
+3-> machineSize = 4
+
+\par
+The major change to the evaluator lies in the @steps@ function, which
+does not just add all of the tasks that were created into the machine.
+Instead it now uses @scheduler@ to pick replacement tasks for any task
+that cannot proceed.
+\begin{enumerate}
+\item First, we extract the sparks in the task pool from the global
+state component.
+\item New tasks are then created for the sparks, and are added to
+the already executing tasks.
+\item The @scheduler@ function then selects which tasks to execute.
+\end{enumerate}
+
+Here is the way we code @steps@:
+
+M3> steps :: pgmState -> pgmState
+GH3> steps :: PgmState -> PgmState
+3> steps state
+3>  = scheduler global' local'
+3>    where ((out, heap, globals, sparks, stats), local) = state
+3>          newtasks = [makeTask a | a <- sparks]
+3>          global'  = (out, heap, globals, [], stats)
+3>          local'   = local ++ newtasks
+
+\par
+The scheduling policy is very simple: we select the first
+@machineSize@ tasks and run them. These tasks are then placed at the
+end of the scheduling queue. This scheduling policy is usually called
+a {\em round-robin\/}\index{scheduling policy!round-robin} scheduling
+policy.
+
+M3> scheduler :: pgmGlobalState -> [pgmLocalState] -> pgmState
+GH3> scheduler :: PgmGlobalState -> [PgmLocalState] -> PgmState
+3> scheduler global tasks
+3>  = (global', nonRunning ++ tasks')
+3>    where running    = map tick (take machineSize tasks)
+3>          nonRunning = drop machineSize tasks
+3>          (global', tasks') = mapAccuml step global running
+
+\begin{exercise}\label{pgm:X:sched1}
+What happens if the tasks that are executed are not placed at the end
+of the scheduling queue for the next step. (Hint: try it!)
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:sched2}
+One improvement we can make is to create tasks from the spark
+pool only when there are idle processors. Modify @steps@ to do this.
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:sched3}
+Another improvement is only to schedule tasks that can proceed. At
+the moment we schedule tasks to evaluate nodes that are already in
+WHNF. We also schedule tasks that are blocked because they are
+attempting to unwind locked nodes. Modify @scheduler@ so that this
+no longer happens.
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:scheduling}
+Investigate the use of other scheduling strategies. For example, try
+scheduling the last task in the task pool.
+
+Does the scheduling strategy make any difference to the execution time
+of the program?
+\end{exercise}
+
+\section{Mark~4: A better way to handle blocking}
+\label{pgm:sc:mark4}
+
+So far we have left blocked\index{blocking, of tasks} tasks in the
+machine's local state, and required the @scheduler@ function to select
+runnable tasks. This means that the @scheduler@ function may have to
+skip over a considerable number of blocked tasks before coming across
+one that it can run.
+
+We can do better than this!
+It would be a much better idea to attach a blocked task to the node
+That caused it to block. Because a locked\index{locking, of node} node can
+cause an arbitrary number of tasks to block, we will need to allow a
+list of tasks to be placed on the locked node. We call this the {\em
+pending list}\index{pending list, of node}.
+
+How do we use the pending list?
+\begin{enumerate}
+\item When a node is locked, it has its pending list set to @[]@.
+\item When a task encounters a locked node, the task places
+itself on the pending list of the locked node.
+\item When a locked node is unlocked, all of the tasks in its pending
+list become runnable, and are transferred to the machine's local state.
+\end{enumerate}
+
+To implement the Mark~4 machine we must make the following changes to
+the data structures of the machine.
+
+\subsection{Data structures}
+
+First, each locked node must now have a pending list; this means that
+the @node@ data type is now:
+
+M4> node ::= NNum num                             || Numbers
+M4>          | NAp  addr addr                     || Applications
+M4>          | NGlobal num gmCode                 || Globals
+M4>          | NInd addr                          || Indirections
+M4>          | NConstr num [addr]                 || Constructors
+M4>          | NLAp addr addr pgmPendingList      || Locked applications
+M4>          | NLGlobal num gmCode pgmPendingList || Locked globals
+
+GH4> data Node = NNum Int                          -- Numbers
+GH4>          | NAp  Addr Addr                     -- Applications
+GH4>          | NGlobal Int GmCode                 -- Globals
+GH4>          | NInd Addr                          -- Indirections
+GH4>          | NConstr Int [Addr]                 -- Constructors
+GH4>          | NLAp Addr Addr PgmPendingList      -- Locked applications
+GH4>          | NLGlobal Int GmCode PgmPendingList -- Locked globals
+
+A pending list is just a list of tasks. The tasks in a locked node's
+pending list will be those that have been blocked on the locked node.
+
+M4> pgmPendingList == [pgmLocalState]
+GH4> type PgmPendingList = [PgmLocalState]
+
+\begin{exercise}\label{pgm:X:4:showNode}
+Modify @showNode@ to work with the new definition of @node@.
+\end{exercise}
+
+The other change is to the type of @gmSparks@. Instead of being a list of
+addresses -- as it was in previous parallel G-machines -- this is now
+a list of tasks.
+
+M4> gmSparks == [pgmLocalState]
+GH4> type GmSparks = [PgmLocalState]
+
+\begin{exercise}\label{pgm:X:showSparks}
+Modify the @par@ transition so that it places tasks into the spark
+pool and not addresses. You should modify @showSparks@ function to
+print the number of tasks in the spark pool, and the @steps@ function
+will need to be modified because it no longer needs to turn items in
+the spark pool into tasks.
+\end{exercise}
+
+\subsection{Locking and unlocking}
+
+We have been building up to a new way to handle locking and unlocking
+of nodes. Let us first consider what happens when a locked node is
+about to be updated. The @Update@ instruction will be implemented
+using a call to @unlock@. Each node in the spine of the expression
+about to be overwritten will need to have the tasks in its pending
+list transferred to the spark pool. To do this we define the following
+function that transfers tasks to the spark pool:
+
+M4> emptyPendingList :: [pgmLocalState] -> gmState -> gmState
+GH4> emptyPendingList :: [PgmLocalState] -> GmState -> GmState
+4> emptyPendingList tasks state
+4>  = putSparks (tasks ++ getSparks state) state
+
+\begin{exercise}\label{pgm:X:unlock}
+Modify the @unlock@ function so that it empties the tasks in the
+pending lists into the spark pool.
+\end{exercise}
+
+The locking operation occurs as part of the @Unwind@ instruction. As
+previously, we use the @lock@ function to perform the locking
+operation. Now it must give each newly locked node an empty pending
+list.
+
+\begin{exercise}\label{pgm:X:lock}
+Modify the @lock@ function so that it gives locked nodes an empty
+pending list.
+\end{exercise}
+
+Finally, we discuss what happens when a task attempts to unwind a
+locked node. Clearly, we place the task onto the node's pending list.
+But what do we replace the task with? Remember that the type of @step@
+is:
+
+0> step :: gmState -> gmState
+
+The solution we have adopted is to replace the task with an
+@emptyTask@:
+
+M4> emptyTask :: pgmLocalState
+GH4> emptyTask :: PgmLocalState
+4> emptyTask = ([], [], [], [], 0)
+
+\par
+So we need two new transitions for @Unwind@. We begin with the one for
+locked application nodes, in which we see that the task is placed on
+the node's pending list and we see that the task is replaced by the
+@emptyTask@.
+
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+	\hspace{1em} (\therulenumber) \hspace{1em}
+       $\begin{array}{|l@@{~ \langle }lll@@{\rangle ~ }rr|}
+       \hline
+&h[a: @*NAp@\  a_1\  a_2\ pl]& m& t & \langle [@Unwind@] & a:s\rangle\\
+\Longrightarrow &
+h[a: @*NAp@\  a_1\  a_2\ \langle [@Unwind@],\,a:s\rangle:pl] &
+  {m} & t & \multicolumn{2}{l|}{@emptyTask@}\\ \hline
+\end{array}$
+\end{flushleft}
+
+The rule for locked global nodes is similar: we see that the task is
+placed onto the node's pending list, and is itself replaced by the
+@emptyTask@.
+
+\refstepcounter{rulenumber}
+    \begin{flushleft}
+	\hspace{1em} (\therulenumber) \hspace{1em}
+       $\begin{array}{|l@@{~ \langle }lll@@{\rangle ~ }rr|}
+       \hline &
+h[a: @*NGlobal@\ 0\ c\ pl]& m&t &\langle [@Unwind@] & a:s\rangle \\
+\Longrightarrow &
+h[a: @*NGlobal@\ 0\ c\ \langle [@Unwind@],\,a:s\rangle:pl] &
+  {m} & {t} & \multicolumn{2}{l|}{@emptyTask@}\\ \hline
+\end{array}$
+\end{flushleft}
+
+\begin{exercise}\label{pgm:X:4:unwind}
+Modify the @unwind@ function to implement the new transitions for the
+@Unwind@ instruction. You will also need to make the @getArg@ function:
+
+4> getArg (NLAp a1 a2 pl) = a2
+
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:4:scheduler}
+Modify the @scheduler@ function to place non-running tasks into the
+spark pool.
+\end{exercise}
+
+\begin{exercise}\label{pgm:X:4:doAdmin}
+Modify the @doAdmin@ function to filter out @emptyTask@'s from the
+local state.
+\end{exercise}
+
+\section{Conclusions}
+
+This chapter has shown that, in principle, a shared memory
+implementation of lazy functional languages is straightforward.  Of
+course, we have also seen that there are payoffs to be had by carefully
+considering optimisations to the simple scheme we used initially in
+the Mark~1 machine.
+In all of our parallel machines, the graph acts as a communication and
+synchronisation medium; and in the Mark~2 and Mark~3 machines,
+individual processes will be blocked when trying to access locked
+nodes in the heap.
+
+So where are the current challenges in the parallel implementation of
+lazy functional languages?
+The mechanisms for parallelism included in this book do not handle the
+deletion of processes. If speculative parallelism is going to be used
+then realistic implementations will need to deal with this problem.
+On the other hand, finding the non-speculative parallelism is often
+difficult, and in large programs this may even be intractable.
+Attempts have been made to use abstract interpretation for this
+purpose, and although the results look promising, they should be
+regarded tentatively.
+
+One final area that we have not covered is that of distributed memory
+parallel machines. Again, in principle they are similar to shared
+memory machines, but the practicalities are quite different.
+Arranging the message passing so as to avoid deadlock is something of
+a black art.
+
+\theendnotes
+
+% end of chap05

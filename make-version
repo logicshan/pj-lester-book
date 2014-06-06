@@ -1,0 +1,78 @@
+#! /bin/sh
+
+#	make_version n G		(for making Gofer version n)
+#	make_version n M		(for making Miranda version n)
+#	make_version n H		(for making Haskell version n)
+#
+#	make-version LATEX x		(for selecting all versions for language x;
+#					   used when Latexing, so the
+#					   initial ">" is omitted too. )
+#
+#	>	all versions
+#	x>	all "x" versions	where x is M (for Miranda) or G (for Gofer)
+#	xn>	"x" version n
+#	xn->	"x" from version n onward
+#	xn-m>	"x" versions n to m
+
+
+expand | awk '
+
+
+BEGIN		{ if ("'$1'" == "LATEX") { latexing = 1 } 
+		  else { latexing = 0 }
+
+#		  Print initial banner to identify this as a literate scipt
+		  if (!latexing) { printf ">\n\n" }
+	 	}
+
+#	Select lines of form > ...
+/^>/		{ print $0
+		  next
+		}
+  
+#	Select lines of form x> ...
+/^[A-Z]*'$2'[A-Z]*>/	{ angle_pos = index( $0, ">" )
+	  print ">" substr( $0, angle_pos+1 )
+	  next
+	}
+
+#	Select lines of form xn> ...
+/^[A-Z]*'$2'[A-Z]*[0-9]>|^[0-9]>/	{ angle_pos = index( $0, ">" )
+		  if (latexing || (substr( $0, angle_pos-1, 1 ) +0 == '$1')) {
+		    print ">" substr( $0, angle_pos+1 )
+		    }
+		  next  }
+
+# 	Select lines of form xn-m>
+/^[A-Z]*'$2'[A-Z]*[0-9]+-[0-9]+>|^[0-9]+-[0-9]+>/	{ hyphen_pos = index( $0, "-" )
+			  angle_pos = index( $0, ">" )
+			  from = substr( $0, hyphen_pos-1, 1 )
+			  to = substr( $0, hyphen_pos+1, angle_pos-hyphen_pos-1 )
+
+			  # The "+ 0" stuff is needed to force numeric compare
+			  if (latexing  || (from + 0 <= '$1' && to + 0 >= '$1'))
+				print ">" substr( $0, angle_pos+1 )
+
+			  next
+			}
+
+# 	Select lines of form xn-t>
+/^[A-Z]*'$2'[A-Z]*[0-9]+->|^[0-9]+->/	{ hyphen_pos = index( $0, "-" )
+			  from = substr( $0, hyphen_pos-1, 1 )
+			  angle_pos = index( $0, ">" )
+
+			  # The "+ 0" stuff is needed to force numeric compare
+			  if (latexing || (from + 0 <= '$1'))
+				print ">" substr( $0, angle_pos+1 )
+
+			  next
+			}
+
+# 	Select non-program lines
+#	They dont start with a sequence of digits, 
+#	hyphens and $2s followed by an angle.
+$0 !~ /^[A-Z]*[-0-9]*>/	{ print $0
+			  next
+			}
+'
+  
